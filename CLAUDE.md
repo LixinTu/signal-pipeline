@@ -23,6 +23,7 @@ A small GTM pipeline that finds SF Bay Area AI startups that are hiring AI or fo
 - **Posting check: the public job-board endpoints of Ashby, Greenhouse and Lever**, which need no key. `verify_postings.py` asks each board once whether a posting is still listed. LinkedIn postings are never fetched.
 - **Automation platform: n8n**, run from the command line in a throwaway Docker container, never as a server. The workflow file is `automation/n8n/weekly_digest.json` and may only read companies and create one task in HubSpot.
 - **Sequencing: Apollo.** `apollo_sequence.py` may only create an inactive draft sequence whose emails wait for review. Adding contacts, approving emails and activating a sequence are mine, in Apollo.
+- **Fit check: Claude API**, through the official `anthropic` SDK. `judge_fit.py` asks a model whether each company with a relevant posting is a target account and compares the answers with my decisions. The instructions it sends are `prompts/fit_rules.md`, word for word; the company's name and website are hidden first. I run it by hand during review, with a spend cap and `ANTHROPIC_API_KEY` from `.env`. Its answers are a second opinion and change nothing in `accounts.csv`.
 
 ## Rules
 - Secrets live only in `.env`, never in code or commits. Keep a `.env.example` with variable names and placeholders. Add `.env` and `data/raw/` to `.gitignore` before the first commit.
@@ -31,8 +32,8 @@ A small GTM pipeline that finds SF Bay Area AI startups that are hiring AI or fo
 - Before any run that spends credits, estimate the credits and wait for my OK. Test on 5 records first.
 - Cache every raw API response in `data/raw/` with a timestamp, so re-runs don't spend credits again.
 - On HTTP 429, wait and retry with backoff. Log and skip bad records instead of crashing.
-- The scheduled job makes no paid LLM API calls. "Why now" lines and email drafts are written during review, in Clay or in a Claude Code session.
-- Keep it simple: Python 3.11+, `requests`, `pandas`, `python-dotenv`. Small readable scripts, type hints, short docstrings. No frameworks.
+- The scheduled job makes no paid LLM API calls. "Why now" lines and email drafts are written during review, in Clay or in a Claude Code session. `judge_fit.py` is the one script that calls a model's API: it runs by hand, never from the workflow, and its key is not stored on GitHub.
+- Keep it simple: Python 3.11+, `requests`, `pandas`, `python-dotenv`, and `anthropic` for `judge_fit.py` only. Small readable scripts, type hints, short docstrings. No frameworks.
 
 ## Build order
 1. `fetch_jobs.py` → `data/jobs.csv`. With `--funded-companies` it searches only the step 2 companies that can become accounts, so step 2 runs first. Add `--any-hq-city` to drop TheirStack's HQ city filter, since the Form D address places HQ. `--core-roles --one-per-company` is the hiring-first search: forward deployed and applied AI titles only, one job per new company, so one credit buys one company.

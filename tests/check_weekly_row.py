@@ -120,12 +120,26 @@ last = rows()[-1]
 check("credits are empty when one of the two searches left no line: a partial sum is not written",
       last["credits_spent"] == "" and last["filings_read"] == "1347")
 check("no posting check file: both posting counts are empty", (last["postings_checked"], last["postings_still_open"]) == ("", ""))
+REUSED = "INFO Reusing 1 cached response(s) from today (1 jobs); no credits spent.\n"
+write_files(logs={**LOGS, "jobs_funded": REUSED, "jobs_hiring": REUSED})
+run("--status", "success")
+check("two searches that reused the day's saved answers spent 0 credits, and the row says 0", rows()[-1]["credits_spent"] == "0")
+write_files(logs={**LOGS, "jobs_funded": REUSED})
+run("--status", "success")
+check("one reused search and one that spent 10: the row says 10", rows()[-1]["credits_spent"] == "10")
+write_files(logs={**LOGS, "jobs_funded": REUSED, "jobs_hiring": "INFO Wrote 2 jobs at 2 companies to data/jobs.csv\n"})
+run("--status", "failure")
+check("a search that logged neither a count nor 'no credits spent' still leaves the cell empty", rows()[-1]["credits_spent"] == "")
+write_files(logs={**LOGS, "hubspot": "INFO no credits spent\n"})
+run("--status", "failure")
+check("only the credit count has a zero line: any other count stays empty without its own line",
+      (rows()[-1]["hubspot_created"], rows()[-1]["hubspot_updated"]) == ("", ""))
 write_files(logs={"funding": "ERROR SEC did not answer\n", "hubspot": "INFO HubSpot push: created 0, updated 0"}, accounts=None, statuses=None)
 run("--status", "failure")
 last = rows()[-1]
 check("a run that stopped early still gets a row, with empty cells where a step did not get that far",
       (last["filings_read"], last["credits_spent"], last["accounts"], last["new_accounts"], last["digest_listed"]) == ("", "", "", "", "")
-      and (last["hubspot_created"], last["hubspot_updated"]) == ("0", "0") and len(rows()) == 4)
+      and (last["hubspot_created"], last["hubspot_updated"]) == ("0", "0") and len(rows()) == 8)
 
 # 4. --dry-run and refusals
 before, seen_before = wr.RUNS_CSV.read_text(), wr.SEEN_JSON.read_text()
@@ -152,6 +166,7 @@ check("an unknown status, an odd trigger and a page that is not a GitHub run are
 sources = {name: (PROJECT / f"{name}.py").read_text(encoding="utf-8") for name in ("fetch_funding", "fetch_jobs", "push_hubspot", "digest_n8n")}
 check("each pattern still matches what its step logs",
       "Wrote %d filings" in sources["fetch_funding"] and "API credits used by this run: %s." in sources["fetch_jobs"]
+      and sources["fetch_jobs"].count(wr.ZERO_LINES["credits_spent"]) == 1
       and "HubSpot push: created %d, updated %d" in sources["push_hubspot"]
       and "n8n digest: {found} new account(s)" in sources["digest_n8n"])
 workflow = (PROJECT / ".github" / "workflows" / "weekly.yml").read_text(encoding="utf-8")

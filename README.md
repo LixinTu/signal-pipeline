@@ -30,12 +30,13 @@ Measured on 2026-11-16 to 2026-11-18. Every number comes from a real run.
 | Weekly workflow on GitHub, first run (2026-11-18 UTC, started by hand, capped at 1 + 1 credits) | every step passed in about 13.5 minutes: 1,347 filings read, 2 credits spent, 2 accounts, 1 company created and 1 updated in HubSpot, 1 digest task. Every run since: [docs/weekly_runs.csv](docs/weekly_runs.csv) |
 | Contact coverage through Hunter, all 34 accounts (2026-11-18 UTC) | an email for 28 (82%): the target role for 15 (44%), the right team but not its lead for 5, another role for 8. Nothing for 6: Hunter holds no address for those domains. By Hunter's own check, 25 of the 28 emails are valid, 2 accept-all, 1 not rated. One source only |
 | Apollo draft sequence (2026-11-18 UTC) | 1 inactive sequence created through the API on the free plan: 3 steps, every email waiting for review. No contact added, nothing sent |
-| Cost | $0: 62 of TheirStack's 200 free monthly credits and 31 of Hunter's 50; SEC and the job boards are free |
-| Offline checks | 614, in 11 files, on simulated data. 164 planted bugs, each one caught by a check |
+| A model's second opinion on fit (2026-11-18 UTC) | A model read the facts of all 40 companies with each name hidden: 35 targets, 3 not targets, 2 unsure. It agrees with all 9 of the reviewer's decisions, where the rules alone reproduce 6, and every quote it gave is in the facts it was sent. Its instructions were written from the reasons for those decisions, so this shows a stated policy applied, not a policy found |
+| Cost | Data: $0, with 62 of TheirStack's 200 free monthly credits and 31 of Hunter's 50; SEC and the job boards are free. The model step: $0.96 at list price for the 40 companies |
+| Offline checks | 703, in 12 files, on simulated data. 196 planted bugs, each one caught by a check |
 
 The first version listed 5 companies. It required a Form D filing, and only 9 of the 184 funded companies (5%) had a matching job. A backtest explained why: of 5 AI startups that Brix names as customers, only one had filed a Form D under its own name since 2023. Funding now adds points instead of deciding who is listed, and the list grew to 28, with 7 more companies waiting for review.
 
-A reviewer first decided those cases one by one. On 2026-11-17 rules replaced that step, so the weekly run no longer waits for anyone, and the list is now 34. Replayed with no hand decisions, the rules reproduce 6 of the reviewer's 9 decisions: two competitors and a fertility clinic are caught only by the block list, and one staffing firm that the rules drop was kept by hand. One gap stays visible: the search filters on where a company is based, not on where the job is, so for 11 of the 34 accounts the only posting fetched is remote, outside the Bay Area or names no city.
+A reviewer first decided those cases one by one. On 2026-11-17 rules replaced that step, so the weekly run no longer waits for anyone, and the list is now 34. Replayed with no hand decisions, the rules reproduce 6 of the reviewer's 9 decisions. They miss three: a competitor that sells engineering teams and a fertility clinic stay listed without the block list, and a staffing firm that the reviewer kept is dropped. A model that reads each company's description agrees with all nine, but it only advises: rules and the reviewer still decide the list. One gap stays visible: the search filters on where a company is based, not on where the job is, so for 11 of the 34 accounts the only posting fetched is remote, outside the Bay Area or names no city.
 
 What these numbers do not show: nobody has been contacted, so there is no reply rate, no meeting and no revenue behind this list. What it can measure is its own data: how many accounts, how fresh the postings, how many contacts found.
 
@@ -53,6 +54,8 @@ flowchart LR
     B --> R["review_matches.csv, funnel.csv<br/>what the rules left out, and counts"]
     A --> V["verify_postings.py<br/>are the postings still open?"]
     A --> H["push_hubspot.py<br/>HubSpot companies"]
+    J -.-> M["judge_fit.py<br/>by hand, during review:<br/>a model's second opinion on fit"]
+    D -.-> M
     H --> N["digest_n8n.py<br/>n8n workflow: weekly digest task"]
     W["weekly.yml<br/>GitHub Actions, Mondays"] -.-> F
     W -.-> L["docs/weekly_runs.csv<br/>one row of counts per run"]
@@ -65,6 +68,8 @@ flowchart LR
 5. **`push_hubspot.py`** creates or updates each company in HubSpot, searching by domain first so a second run creates nothing.
 6. **`digest_n8n.py`** runs an [n8n](https://n8n.io) workflow, `automation/n8n/weekly_digest.json`, in a throwaway Docker container: it reads the week's new companies from HubSpot and creates one task that lists them with their flags. It is how the reviewer sees what the rules listed.
 7. **`.github/workflows/weekly.yml`** runs these steps every Monday with a fixed credit cap, appends one row of counts to [docs/weekly_runs.csv](docs/weekly_runs.csv) and writes a run summary.
+
+One step is run by hand, during review, and never by the weekly job: **`judge_fit.py`** asks a model whether each company is a target account at all (see below).
 
 ### Scoring
 
@@ -112,8 +117,9 @@ I set the rules, approved each step's plan, reviewed every output and made the r
 Because I did not write the code by hand, nothing here rests on trust:
 
 - **Offline checks.** Each script has a check file that runs it on simulated data, without any API call.
-- **Planted bugs.** [`tests/planted_bugs.py`](tests/planted_bugs.py) plants 164 small bugs, one at a time, in a copy of the scripts and the workflow (a guard switched off, a boundary moved by one, a key written where it should not be) and confirms that the checks catch each one.
+- **Planted bugs.** [`tests/planted_bugs.py`](tests/planted_bugs.py) plants 196 small bugs, one at a time, in a copy of the scripts and the workflow (a guard switched off, a boundary moved by one, a key written where it should not be) and confirms that the checks catch each one.
 - **A model writes one kind of text, and a script checks it.** The "why now" line of each account is drafted by a model during review, under [written rules](prompts/why_now_rules.md). [`why_now_check.py`](why_now_check.py) then checks every date, amount and count in the line against the account's own data. On the 34 real lines it found 0 problems, and it rejected all 11 mistakes planted in copies of them.
+- **A model gives a second opinion, and the opinion is scored.** Rules cannot read a description: they listed a competitor of the client and a fertility clinic. [`judge_fit.py`](judge_fit.py) sends each company's facts to the Claude API under [written instructions](prompts/fit_rules.md), with the company's name and website hidden, and gets back a verdict, the rule behind it and a quote. The script checks that the quote is in the facts it sent, then compares the verdicts with the reviewer's decisions: 9 of 9 agree. The answer never changes the list; the two accounts the model was unsure about are left for the reviewer.
 - **The weekly job calls no model.** It costs nothing, and the same data gives the same list.
 
 ## Run it
@@ -121,8 +127,8 @@ Because I did not write the code by hand, nothing here rests on trust:
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env          # add your TheirStack key and an SEC User-Agent
-python tests/run_all.py       # 614 offline checks, no API calls (one file needs Node.js)
-python tests/planted_bugs.py  # optional, a few minutes: 164 planted bugs, each must be caught
+python tests/run_all.py       # 703 offline checks, no API calls (one file needs Node.js)
+python tests/planted_bugs.py  # optional, a few minutes: 196 planted bugs, each must be caught
 
 python fetch_funding.py                                                    # free; about 12 minutes the first time
 python fetch_jobs.py --funded-companies --any-hq-city --days 30 --limit 1  # 1 credit: counts the matches
@@ -131,6 +137,7 @@ python build_accounts.py
 python verify_postings.py --dry-run                                        # counts the job boards it would ask
 python push_hubspot.py --dry-run                                           # prints the plan, sends nothing
 python digest_n8n.py --dry-run                                             # prints the docker command, runs nothing
+python judge_fit.py --dry-run                                              # counts the requests to the model, sends nothing
 ```
 
 Add `--dry-run` to `fetch_jobs.py` to print a request without spending a credit.
@@ -144,7 +151,8 @@ Add `--dry-run` to `fetch_jobs.py` to print a request without spending a credit.
 - **Only 18 of 45 postings can be re-checked by code.** The rest are LinkedIn links, which this project does not fetch, so they stay a hand check. "Closed" means the posting is no longer on the board's published list.
 - **One contact source.** Hunter has no address for 6 of the 34 domains, and for 13 more the person found is not the one to write to. A second source for the misses would make it a waterfall; it is not built.
 - **Name matching is brittle.** Form D has legal names, TheirStack has brand names. A short-form match counts only when a second field confirms it; a brand that shares nothing with the legal name is missed.
-- **Rules can be wrong, and nothing stops them.** A company that is not a customer stays listed until the reviewer adds it to the block list: of the first 40 companies, one (a fertility clinic) got through every rule. The funnel table and the `flags` column are there so that this is visible.
+- **Rules can be wrong, and nothing stops them.** A company that is not a customer stays listed until the reviewer adds it to the block list: of the first 40 companies, two (a competitor and a fertility clinic) got through every rule. The funnel table and the `flags` column are there so that this is visible. `judge_fit.py` would flag both, but only when someone runs it.
+- **The model check proves little yet.** It is scored on 9 decisions, 3 of them rejections, in one run, and its instructions were written from the reasons for those same decisions. A real test needs decisions it has not seen: a sales team's ratings, or the reviewer's rulings on next month's new companies.
 - **TheirStack lists one posting found on a careers page and on Indeed as two jobs** and charges for both. The pipeline merges them afterwards.
 - **Generated tables stay out of the repo** until TheirStack's terms on sharing its data are confirmed, so this page shows totals, and the sample in `docs/sample_output/` is simulated.
 
@@ -152,11 +160,12 @@ Add `--dry-run` to `fetch_jobs.py` to print a request without spending a credit.
 
 - Steps 1 to 3 ran on real data; the list of 34 comes from runs on my own machine.
 - All 34 accounts are in HubSpot, and a second push created no duplicate.
-- The weekly workflow ran once on GitHub, started by hand with a cap of 1 + 1 credits, and every step passed. The Monday schedule is on, capped at 10 + 10 credits a run, and each run appends its row to [docs/weekly_runs.csv](docs/weekly_runs.csv). GitHub keeps its own data between runs, so its list started from that first run's 2 accounts and grows by what each week finds.
-- The n8n digest ran three times: twice from my machine and once inside the weekly workflow.
+- The weekly workflow ran twice on GitHub on 2026-11-18, started by hand with a cap of 1 + 1 credits, and every step passed both times. The Monday schedule is on, capped at 10 + 10 credits a run, and each run appends its row to [docs/weekly_runs.csv](docs/weekly_runs.csv). GitHub keeps its own data between runs, so its list started from that first run's 2 accounts and grows by what each week finds.
+- The n8n digest ran four times: twice from my machine and twice inside the weekly workflow.
 - `find_contacts.py` measured contact coverage on all 34 accounts. No name, email or position was saved for the 29 companies of that run; one contact each for the 5 companies of the first test stays on my machine.
 - `apollo_sequence.py` ran once: Apollo holds one inactive draft sequence with three emails waiting for review. No mailbox is linked, no contact was added and nothing has been sent to anyone. No send is planned: the sequence stays a draft.
-- Next: screenshots, the same table built in Clay for comparison, a second contact source, and a model step that judges whether a company fits, scored against the reviewer's decisions.
+- `judge_fit.py` ran once, on all 40 companies. Its answers are saved on my machine; the two accounts it was unsure about (a therapeutics company, and one whose description never says what it sells) wait for the reviewer.
+- Next: screenshots, the same table built in Clay for comparison, and a second contact source.
 
 ## Repo map
 
@@ -169,6 +178,7 @@ Add `--dry-run` to `fetch_jobs.py` to print a request without spending a credit.
 | `find_contacts.py` | Optional: looks up one contact per account through Hunter's API, the code version of a Clay enrichment column; names and emails stay in git-ignored files |
 | `apollo_sequence.py`, `automation/apollo/outreach_sequence.json` | Creates one inactive draft email sequence in Apollo from three draft emails |
 | `why_now_check.py`, `prompts/why_now_rules.md` | The rules for the model-drafted "why now" lines and the script that checks each line against the data |
+| `judge_fit.py`, `prompts/fit_rules.md` | Optional, run by hand: asks the Claude API whether each company is a target account, with its name hidden, and scores the answers against the reviewer's decisions |
 | `names.py`, `bay_area.py` | Company-name cleaning and Bay Area rules shared by the steps |
 | `tests/` | Offline checks (`python tests/run_all.py`) and the planted bugs (`python tests/planted_bugs.py`) |
 | `docs/sample_output/` | The funnel counts of the real run and a simulated sample of the account list |

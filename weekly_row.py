@@ -11,7 +11,8 @@ Where each number comes from:
 - data/raw/accounts_seen.json, the names of the accounts that earlier runs listed, to count
   the new ones. That file stays private, like everything in data/raw/. Without it there is
   nothing to compare with, so the first run leaves `new_accounts` empty.
-A number that cannot be read is left empty, never guessed.
+A number that cannot be read is left empty, never guessed. A job search that reused the
+day's saved answers logs "no credits spent" instead of a credit count, and counts as 0.
 
 Usage (by the workflow):
     python weekly_row.py --status success --trigger schedule --started-at 1763478000 --run-url https://github.com/...
@@ -51,6 +52,9 @@ LOG_COUNTS: dict[str, tuple[tuple[str, ...], str]] = {
     "hubspot_updated": (("hubspot",), r"HubSpot push: created \d+, updated (\d+)"),
     "digest_listed": (("digest",), r"n8n digest: (\d+) new account\(s\)"),
 }
+# What a step logs instead of its count when the count is zero: fetch_jobs.py spends nothing
+# when it reuses the answers already saved that day
+ZERO_LINES = {"credits_spent": "no credits spent"}
 STATUSES = ("success", "failure", "cancelled", "")
 STILL_OPEN = ("open", "reposted")
 CHECKED = STILL_OPEN + ("closed",)
@@ -60,17 +64,20 @@ log = logging.getLogger("weekly_row")
 
 def from_logs(column: str) -> str:
     """The number a step logged, added up over the logs named for this column, or "" when
-    any of those logs is missing or does not hold the line."""
+    any of those logs is missing or holds neither the line nor the step's own way of saying
+    that the count is zero."""
     names, pattern = LOG_COUNTS[column]
     total = 0.0
     for name in names:
         try:
-            found = re.findall(pattern, (LOG_DIR / f"{name}.log").read_text(encoding="utf-8", errors="replace"))
+            text = (LOG_DIR / f"{name}.log").read_text(encoding="utf-8", errors="replace")
         except OSError:
             return ""
-        if not found:
+        found = re.findall(pattern, text)
+        if found:
+            total += float(found[-1])
+        elif column not in ZERO_LINES or ZERO_LINES[column] not in text:
             return ""
-        total += float(found[-1])
     return f"{total:g}"
 
 
