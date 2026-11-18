@@ -23,9 +23,11 @@ Measured on 2026-11-16, with the review decisions of 2026-11-17. Every number co
 | **Accounts** | **34**: 8 funded and hiring, 26 hiring only; 23 have a forward deployed opening |
 | HubSpot, first live test (2026-11-17) | 5 companies created; a second run created none and updated 5 |
 | Digest in n8n, first live run (2026-11-18 UTC) | the workflow found the 5 new companies and created 1 HubSpot task, in 9 seconds |
+| Weekly workflow on GitHub, first run (2026-11-18 UTC, started by hand, capped at 1 + 1 credits) | every step passed in 13.5 minutes: 1,347 filings read, 2 credits spent, 2 accounts, 1 company created and 1 updated in HubSpot, 1 digest task |
+| Contact lookup through Hunter, test on 5 companies of 4 to 489 people (2026-11-18 UTC) | the target role for 1, the right team but not its lead for 2, nothing for 2: Hunter holds no address for those two domains, even in a wide search. All 3 emails valid by Hunter's own check. 6 of 50 free credits over two rounds |
 | Apollo draft sequence (2026-11-18 UTC) | 1 inactive sequence created through the API on the free plan: 3 steps, every email waiting for review. No contact added, nothing sent |
 | Cost | $0: 60 of TheirStack's 200 free monthly credits; SEC is free |
-| Offline checks | 471, in 7 files, on simulated data |
+| Offline checks | 511, in 8 files, on simulated data |
 
 The first version listed 5 companies. It required a Form D filing, and only 9 of the 184 funded companies (5%) had a matching job. A backtest explained why: of 5 AI startups that Brix names as customers, only one had filed a Form D under its own name since 2023. Funding now adds points instead of deciding who is listed, and the list grew to 28, with 7 more companies waiting for review.
 
@@ -90,7 +92,7 @@ No run waits for a person. Each uncertain case has a rule, and the doubt is writ
 
 - **Credits.** TheirStack charges one credit per job returned. Every response is cached before use, jobs already received are excluded from each request, a count for one credit comes before any larger fetch, and `--limit` caps every run.
 - **No scraping, no sending.** Data comes from documented APIs. The pipeline drafts and scores and never sends; outreach goes out only from a sequencing tool, in the owner's name, after the owner approves the batch.
-- **No personal data in the repo.** Contacts are looked up by hand in other tools. The repo holds company-level data only, and generated tables are git-ignored.
+- **No personal data in the repo.** `find_contacts.py` can look up one contact per account through Hunter's API. It refuses to run unless git ignores its output, discards the people it does not pick, saves no phone numbers or social profiles, and logs counts only. The repo holds company-level data only, and generated tables are git-ignored.
 - **Outreach tooling cannot send.** `apollo_sequence.py` knows two Apollo endpoints: list schedules and create a sequence. It creates the sequence inactive with every email waiting for review, and has no code to add contacts, approve an email or activate anything.
 - **Secrets** live in `.env` and in GitHub Secrets, never in code, logs or cached responses.
 
@@ -103,7 +105,7 @@ I set the rules, approved each step's plan, reviewed every output and made the r
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env          # add your TheirStack key and an SEC User-Agent
-python tests/run_all.py       # 471 offline checks, no API calls (one file needs Node.js)
+python tests/run_all.py       # 511 offline checks, no API calls (one file needs Node.js)
 
 python fetch_funding.py                                                    # free; about 12 minutes the first time
 python fetch_jobs.py --funded-companies --any-hq-city --days 30 --limit 1  # 1 credit: counts the matches
@@ -129,9 +131,10 @@ Add `--dry-run` to `fetch_jobs.py` to print a request without spending a credit.
 
 - Done and run on real data: steps 1 to 3.
 - Step 4 ran live on 2026-11-17 for the first 5 accounts: 7 company properties and 5 companies created; a second run created none and updated 5.
-- Written and checked offline, not yet run: the weekly workflow (needs repository secrets).
+- The weekly workflow ran once on GitHub, started by hand with a cap of 1 + 1 credits, and every step passed. The Monday schedule is switched off until its weekly credit cap is approved. GitHub keeps its own data between runs, so that run built its 2 accounts from scratch; the 34 above come from the runs on my own machine.
 - Next: push the other accounts, the first scheduled run, screenshots, and a Clay version of the same table for comparison.
-- The n8n digest ran live once, on 5 companies; it is in the weekly workflow, which has not run on GitHub yet.
+- The n8n digest ran twice: once from my machine and once inside the weekly workflow on GitHub.
+- `find_contacts.py` ran on 5 companies, in two rounds. Widening the search did not help the 2 companies Hunter has no address for, so a second source is the next thing to test. Names and emails stay on my machine.
 - `apollo_sequence.py` ran once: Apollo holds one inactive draft sequence with three emails waiting for review. No mailbox is linked, no contact was added and nothing has been sent to anyone. No send is planned: the sequence stays a draft ([guide](docs/apollo-sequence.md)).
 
 ## Repo map
@@ -140,6 +143,7 @@ Add `--dry-run` to `fetch_jobs.py` to print a request without spending a credit.
 |---|---|
 | `fetch_funding.py`, `fetch_jobs.py`, `build_accounts.py`, `push_hubspot.py` | The four steps |
 | `digest_n8n.py`, `automation/n8n/weekly_digest.json` | The weekly digest: an n8n workflow and the script that runs it headless |
+| `find_contacts.py` | Optional: looks up one contact per account through Hunter's API, the code version of a Clay enrichment column; names and emails stay in git-ignored files |
 | `apollo_sequence.py`, `automation/apollo/project2_sequence.json` | Creates one inactive draft email sequence in Apollo from three draft emails |
 | `names.py`, `bay_area.py` | Company-name cleaning and Bay Area rules shared by the steps |
 | `tests/` | Offline checks; `python tests/run_all.py` runs them all |
