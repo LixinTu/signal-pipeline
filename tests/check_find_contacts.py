@@ -332,6 +332,21 @@ check("a second --outcomes-only run reads its own saved answers and spends nothi
 again()
 fc.main(["--outcomes-only", "--companies", "Sixth"])
 check("outcomes add up across runs", list(outcomes().index) == ["Tiny", "Mid", "Big", "Empty", "NoDomain", "Sixth"])
+# a website corrected after the search: the result found under the old website is not a result for the account
+accounts_before, outcomes_before = fc.ACCOUNTS_CSV.read_text(encoding="utf-8"), fc.OUTCOMES_CSV.read_text(encoding="utf-8")
+fc.ACCOUNTS_CSV.write_text(accounts_before.replace("big.example", "big-corrected.example"), encoding="utf-8")
+again()
+fc.main(["--outcomes-only", "--companies", "Sixth"])
+check("a result found under a website the account no longer has is left out, with a warning",
+      list(outcomes().index) == ["Tiny", "Mid", "Empty", "NoDomain", "Sixth"]
+      and logged("1 saved outcome(s) were found under a website that the account no longer has"))
+again()
+fc.main(["--outcomes-only", "--companies", "Big"])
+check("searching that company again, under its new website, puts it back without a warning",
+      "Big" in outcomes().index and outcomes().loc["Big", "domain"] == "big-corrected.example"
+      and not logged("no longer has"))
+fc.ACCOUNTS_CSV.write_text(accounts_before, encoding="utf-8")
+fc.OUTCOMES_CSV.write_text(outcomes_before, encoding="utf-8")
 shutil.rmtree(fc.RAW_DIR)
 again()
 fc.main(["--outcomes-only", "--max-credits", "1"])

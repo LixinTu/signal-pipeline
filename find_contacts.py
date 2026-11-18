@@ -399,12 +399,23 @@ def main(argv: list[str] | None = None) -> int:
         # Outcomes add up across runs. A company searched again replaces its row; a skipped
         # company never replaces a row that holds a result.
         on_file: dict[str, dict[str, Any]] = {}
+        outdated: set[str] = set()
         if OUTCOMES_CSV.exists():
-            earlier = pd.read_csv(OUTCOMES_CSV, dtype=str, keep_default_na=False)
-            on_file = {saved["company_name"]: saved for saved in earlier.to_dict("records")}
+            listed = pd.read_csv(ACCOUNTS_CSV, dtype=str, keep_default_na=False)
+            websites = dict(zip(listed["company_name"], listed["domain"]))
+            for saved in pd.read_csv(OUTCOMES_CSV, dtype=str, keep_default_na=False).to_dict("records"):
+                # A result found under a website the account no longer has says nothing about the
+                # account: it is left out until the company is searched again
+                if websites.get(saved["company_name"], saved["domain"]).strip().lower() != saved["domain"].strip().lower():
+                    outdated.add(saved["company_name"])
+                else:
+                    on_file[saved["company_name"]] = saved
         for row in rows:
             if not (str(row["result"]).startswith("skipped") and row["company_name"] in on_file):
                 on_file[row["company_name"]] = {column: row[column] for column in OUTCOME_COLUMNS}
+        if outdated - set(on_file):
+            log.warning("%d saved outcome(s) were found under a website that the account no longer has. They are "
+                        "left out until those companies are searched again.", len(outdated - set(on_file)))
         pd.DataFrame(list(on_file.values()), columns=OUTCOME_COLUMNS).to_csv(OUTCOMES_CSV, index=False)
     else:
         pd.DataFrame(rows, columns=COLUMNS).to_csv(CONTACTS_CSV, index=False)

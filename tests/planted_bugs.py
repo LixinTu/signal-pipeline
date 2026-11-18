@@ -200,6 +200,9 @@ PLANTED: list[tuple[str, str, list[tuple[str, str, str]]]] = [
         ("the first step may reply to nothing", '        if number == 1 and step["thread"] != "new_thread":', "        if False:"),
     ]),
     ("find_contacts.py", "check_find_contacts.py", [
+        ("a result found under an old website still counts for the account",
+         'if websites.get(saved["company_name"], saved["domain"]).strip().lower() != saved["domain"].strip().lower():',
+         "if False:"),
         ("the key is sent in the query string", 'self.session.headers["X-API-KEY"] = api_key', 'self.session.params = {"api_key": api_key}'),
         ("social profiles are kept", 'KEPT_FIELDS = ("value", "type",', 'KEPT_FIELDS = ("linkedin", "value", "type",'),
         ("the git-ignore guard is removed", "        if not git_ignored(path):", "        if False:"),
@@ -241,7 +244,9 @@ PLANTED: list[tuple[str, str, list[tuple[str, str, str]]]] = [
          '            if not (str(row["result"]).startswith("skipped") and row["company_name"] in on_file):', "            if True:"),
         ("a normal run reuses a saved answer that holds no person",
          '        if with_person and "outcome" in answer and answer.get("returned"):', "        if False:"),
-        ("--outcomes-only forgets its earlier rows", "        if OUTCOMES_CSV.exists():\n            earlier", "        if False:\n            earlier"),
+        ("--outcomes-only forgets its earlier rows",
+         '                else:\n                    on_file[saved["company_name"]] = saved',
+         "                else:\n                    pass"),
     ]),
     ("verify_postings.py", "check_verify_postings.py", [
         ("a posting missing from the board is reported open", '            elif row["_id"] in listed[0]:', "            elif True:"),
@@ -340,6 +345,17 @@ PLANTED: list[tuple[str, str, list[tuple[str, str, str]]]] = [
         ("an accept row overrules the reviewer's outright reject",
          '            labels.setdefault(company, "accept")', '            labels[company] = "accept"'),
         ("an unsure verdict counts as agreement", '        return "unsure"', '        return "yes"'),
+    ]),
+    ("README.zh-CN.md", "check_readme.py", [
+        ("the Chinese README gives another number of accounts",
+         "| **目标客户** | **34** 家：8 家有融资备案且在招", "| **目标客户** | **35** 家：8 家有融资备案且在招"),
+        ("the Chinese README quotes an old number of planted bugs",
+         "201 个故意埋的 bug，每个都被检查发现", "196 个故意埋的 bug，每个都被检查发现"),
+        ("a row is missing from a table of the Chinese README",
+         "| 被规则筛掉 | 3 家：既没有可用的 Form D 备案，也没有核心职位 |\n", ""),
+    ]),
+    ("README.md", "check_readme.py", [
+        ("the English README loses its link to the Chinese one", "**English** | [中文](README.zh-CN.md)", "**English**"),
     ]),
     ("why_now_check.py", "check_why_now.py", [
         ("day dates are not checked",
