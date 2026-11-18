@@ -280,7 +280,7 @@ def run(args, key=KEY, session=SimSession):
 
 COLUMNS = ["company_name", "domain", "signal_tier", "hq_location", "filing_date", "amount_sold_usd",
            "relevant_roles_count", "role_titles", "fde_opening", "job_locations", "salary_ranges",
-           "theirstack_jobs_last_30_days", "company_description", "mandarin_lead_evidence", "score",
+           "theirstack_jobs_last_30_days", "company_description", "client_bonus_evidence", "score",
            "score_reason", "flags", "source_urls"]
 
 
@@ -433,9 +433,9 @@ check("no request left HubSpot's API host", not SIM.stray and NoNetwork.used == 
 check("the ids of the created companies are saved",
       json.loads(ph.IDS_JSON.read_text()) == {c["properties"]["domain"]: c["id"] for c in SIM.companies.values()})
 
-# 5. second run: creates nothing, keeps the owner's edits
+# 5. second run: creates nothing, keeps the reviewer's edits
 alpha_id = by_domain("alpharobotics.example")[0]["id"]
-SIM.companies[alpha_id]["properties"].update({"signal_stage": "contacted", "name": "Alpha Robotics (edited by the owner)"})
+SIM.companies[alpha_id]["properties"].update({"signal_stage": "contacted", "name": "Alpha Robotics (edited by the reviewer)"})
 ROWS[0]["score"] = "7"
 write_accounts(ROWS)
 first_run_calls = len(SIM.calls)
@@ -446,8 +446,8 @@ check("second run exits 0 and creates 0 companies",
       code == 0 and summary() == "HubSpot push: created 0, updated 3, skipped 2, failed 0." and len(SIM.companies) == 3)
 check("second run creates no property", not [c for c in second if c[0] == "POST" and c[1].endswith("/properties/companies")])
 check("an update changes the score", alpha["signal_score"] == "7")
-check("an update keeps the owner's stage and name",
-      alpha["signal_stage"] == "contacted" and alpha["name"] == "Alpha Robotics (edited by the owner)")
+check("an update keeps the reviewer's stage and name",
+      alpha["signal_stage"] == "contacted" and alpha["name"] == "Alpha Robotics (edited by the reviewer)")
 check("updates never send name, domain or signal_stage",
       all(not {"name", "domain", "signal_stage"} & set(c[2]["properties"]) for c in SIM.sent("PATCH")) and len(SIM.sent("PATCH")) == 3)
 
@@ -460,13 +460,13 @@ check("run 2 right after creates 0, although the search finds nothing",
       code == 0 and summary() == "HubSpot push: created 0, updated 3, skipped 0, failed 0." and len(SIM.companies) == 3)
 check("it read each company by its saved id", len(SIM.sent("GET")) - 2 == 3 and logged("does not list it yet"))
 gone = by_domain("charlielabs.example")[0]
-gone["archived"] = True                                          # the owner deleted it in HubSpot
+gone["archived"] = True                                          # the reviewer deleted it in HubSpot
 code, _ = run([])
 check("a company deleted in HubSpot is created again, not updated",
       code == 0 and summary() == "HubSpot push: created 1, updated 2, skipped 0, failed 0."
       and len(by_domain("charlielabs.example")) == 1 and by_domain("charlielabs.example")[0]["id"] != gone["id"])
 moved = by_domain("bravoai.example")[0]
-moved["properties"].update({"domain": "renamed.example", "signal_score": "99"})   # the owner gave it another domain
+moved["properties"].update({"domain": "renamed.example", "signal_score": "99"})   # the reviewer gave it another domain
 code, _ = run([])
 check("a saved id whose company now has another domain is not updated",
       code == 0 and moved["properties"]["signal_score"] == "99" and len(by_domain("bravoai.example")) == 1

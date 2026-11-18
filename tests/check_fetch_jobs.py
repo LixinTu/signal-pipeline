@@ -13,7 +13,7 @@ import pandas as pd
 tmp = Path(tempfile.mkdtemp(prefix="sim_jobs_"))
 fj.RAW_DIR = tmp / "raw"; fj.JOBS_CSV = tmp / "jobs.csv"      # keep the project's data/ untouched
 fj.build_accounts.FUNDING_CSV = tmp / "funding.csv"; fj.build_accounts.RAW_DIR = tmp / "sec_raw"
-fj.build_accounts.REVIEW_DECISIONS_CSV = tmp / "manual" / "review_decisions.csv"  # never the owner's file
+fj.build_accounts.REVIEW_DECISIONS_CSV = tmp / "manual" / "review_decisions.csv"  # never the reviewer's file
 fj.time.sleep = lambda s: SLEEPS.append(s)                      # no real waiting
 fj.load_dotenv = lambda *a, **k: False                          # never load a real .env
 os.environ.pop("THEIRSTACK_API_KEY", None)
@@ -196,6 +196,9 @@ body = RecordingSession.last.bodies[0] if RecordingSession.last and RecordingSes
 check("--any-hq-city run sends the company names without the HQ city filter",
       code == 0 and "company_location_pattern_or" not in body
       and body.get("company_name_case_insensitive_or") == ["SimCo", "SimCo Labs"])
+check("a forward deployed title is marked as one in its row, and another title is not",
+      fj.job_to_row({"id": 7, "job_title": "Senior Forward-Deployed Engineer"}, "2026-11-16T00:00:00Z")["is_fde"] is True
+      and fj.job_to_row({"id": 8, "job_title": "AI Engineer"}, "2026-11-16T00:00:00Z")["is_fde"] is False)
 row = fj.job_to_row({"id": 9, "job_title": "AI Engineer",
                      "final_url": "https://jobs.example.com/acme/123/?utm_source=x#apply",
                      "min_annual_salary_usd": 150000.0, "max_annual_salary_usd": 200000.0,

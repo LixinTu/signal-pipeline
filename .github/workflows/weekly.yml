@@ -1,14 +1,19 @@
-# Weekly run of the signal pipeline: funding (step 2), jobs (step 1), accounts (step 3),
-# HubSpot (step 4), the digest workflow in n8n, then a short run summary.
+# Weekly run of the signal pipeline: funding (step 2), jobs (step 1), accounts (step 3), a
+# check of which postings are still open, HubSpot (step 4), the digest workflow in n8n, one
+# row of counts committed to docs/weekly_runs.csv, then a short run summary.
 #
 # Needs three repository secrets: THEIRSTACK_API_KEY, SEC_USER_AGENT, HUBSPOT_SERVICE_KEY.
-# Optional repository variable REVIEW_DECISIONS_CSV: the text of data/manual/review_decisions.csv,
-# so the owner's overrides (the block list and the accepts) also apply here. No step waits for a
-# review: step 3's rules decide every uncertain match and the summary shows the funnel.
+# Optional repository secrets REVIEW_DECISIONS_CSV and DOMAIN_OVERRIDES_CSV: the text of the
+# two hand-edited files in data/manual/, so the reviewer's overrides (the block list, the
+# accepts and the corrected websites) also apply here. No step waits for a review: step 3's
+# rules decide every uncertain match and the summary shows the funnel.
 #
-# This repository is public, so its logs and run summaries are public too. The scripts log
-# counts, not company lists, and nothing is uploaded as an artifact. API responses are kept
-# between runs in the Actions cache, which is not downloadable from the repository page.
+# This repository is public, so its logs, run summaries and docs/weekly_runs.csv are public
+# too. The scripts log counts, not company lists, the weekly row holds counts only, and
+# nothing is uploaded as an artifact. The two hand-edited files are secrets and not
+# repository variables, because GitHub prints the value of a variable in the log header of
+# every step and shows a secret as ***. API responses are kept between runs in the Actions
+# cache, which is not downloadable from the repository page.
 
 name: Weekly signal run
 
@@ -25,7 +30,7 @@ on:
         default: "10"
 
 permissions:
-  contents: read
+  contents: write  # only for the step that commits one row of counts to docs/weekly_runs.csv
 
 concurrency:
   group: weekly-signal-run
@@ -43,12 +48,14 @@ jobs:
       THEIRSTACK_API_KEY: ${{ secrets.THEIRSTACK_API_KEY }}
       SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
       HUBSPOT_SERVICE_KEY: ${{ secrets.HUBSPOT_SERVICE_KEY }}
-      REVIEW_DECISIONS_CSV: ${{ vars.REVIEW_DECISIONS_CSV }}
       # The weekly credit cap: 10 + 10 = at most 20 TheirStack credits a run
       FUNDED_CREDITS: ${{ inputs.funded_credits || '10' }}
       HIRING_CREDITS: ${{ inputs.hiring_credits || '10' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Note the start time
+        run: echo "RUN_STARTED=$(date +%s)" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v5
         with:
@@ -68,11 +75,26 @@ jobs:
           key: pipeline-data-${{ github.run_id }}
           restore-keys: pipeline-data-
 
-      - name: Owner's overrides (block list and accepts)
-        if: env.REVIEW_DECISIONS_CSV != ''
+      - name: Reviewer's overrides (block list, accepts and corrected websites)
+        env:   # only this step sees the two files, and its log shows them as ***
+          REVIEW_DECISIONS_CSV: ${{ secrets.REVIEW_DECISIONS_CSV }}
+          DOMAIN_OVERRIDES_CSV: ${{ secrets.DOMAIN_OVERRIDES_CSV }}
         run: |
           mkdir -p data/manual
-          printf '%s\n' "$REVIEW_DECISIONS_CSV" > data/manual/review_decisions.csv
+          if [ -n "$REVIEW_DECISIONS_CSV" ]; then
+            printf '%s\n' "$REVIEW_DECISIONS_CSV" > data/manual/review_decisions.csv
+            echo "Review decisions written."
+          else
+            rm -f data/manual/review_decisions.csv   # a copy restored from an earlier run's cache
+            echo "No review decisions stored: the rules run alone."
+          fi
+          if [ -n "$DOMAIN_OVERRIDES_CSV" ]; then
+            printf '%s\n' "$DOMAIN_OVERRIDES_CSV" > data/manual/domain_overrides.csv
+            echo "Corrected websites written."
+          else
+            rm -f data/manual/domain_overrides.csv
+            echo "No corrected websites stored."
+          fi
 
       - name: Step 2, funding (SEC Form D, free)
         run: |
@@ -92,6 +114,9 @@ jobs:
       - name: Step 3, accounts
         run: python build_accounts.py 2>&1 | tee run_logs/accounts.log
 
+      - name: Are the postings still open? (the job boards' public endpoints, no key)
+        run: python verify_postings.py 2>&1 | tee run_logs/postings.log
+
       - name: Step 4, HubSpot
         if: env.HUBSPOT_SERVICE_KEY != ''
         run: python push_hubspot.py 2>&1 | tee run_logs/hubspot.log
@@ -99,6 +124,25 @@ jobs:
       - name: Digest in n8n (one HubSpot task listing the week's new accounts)
         if: env.HUBSPOT_SERVICE_KEY != ''
         run: python digest_n8n.py 2>&1 | tee run_logs/digest.log
+
+      - name: Record the run (one row of counts, committed to docs/weekly_runs.csv)
+        if: always() && github.ref == 'refs/heads/main'
+        env:
+          RUN_STATUS: ${{ job.status }}
+          RUN_TRIGGER: ${{ github.event_name }}
+        run: |
+          python weekly_row.py --status "$RUN_STATUS" --trigger "$RUN_TRIGGER" --started-at "$RUN_STARTED" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/weekly_runs.csv
+          if git diff --cached --quiet; then
+            echo "No new row to commit."
+          else
+            git commit -m "Weekly run $(date -u +%F): one row of counts"
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi
 
       - name: Save API responses for the next run
         if: always()
@@ -112,11 +156,11 @@ jobs:
         run: |
           {
             echo "## Weekly signal run, $(date -u +%F)"
-            for step in funding jobs_funded jobs_hiring accounts hubspot digest; do
+            for step in funding jobs_funded jobs_hiring accounts postings hubspot digest; do
               echo
               echo "### ${step//_/ }"
               if [ -f "run_logs/$step.log" ]; then
-                grep -E "^(WARNING|ERROR) |SEC search:|Wrote [0-9]+ filings|Requests sent:|Jobs received this run|API credits used|Matching jobs not yet received|Candidate companies with a relevant job|Wrote [0-9]+ accounts|Accounts by tier|Funnel:|Owner's decisions|HubSpot push:|n8n digest" \
+                grep -E "^(WARNING|ERROR) |SEC search:|Wrote [0-9]+ filings|Requests sent:|Jobs received this run|API credits used|Matching jobs not yet received|Candidate companies with a relevant job|Wrote [0-9]+ accounts|Accounts by tier|Funnel:|Reviewer's decisions|Websites corrected by hand|Posting check:|Accounts whose every checked posting|HubSpot push:|n8n digest" \
                   "run_logs/$step.log" | sed -E 's/^(INFO|WARNING|ERROR) /- \1: /' | sed -n '1,40p' \
                   || echo "- no summary lines"
               else

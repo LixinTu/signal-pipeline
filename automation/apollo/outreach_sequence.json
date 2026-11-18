@@ -1,5 +1,5 @@
 {
-  "name": "Project 2: outreach draft (created by apollo_sequence.py)",
+  "name": "Outreach draft (created by apollo_sequence.py)",
   "note": "DRAFT. Text in [ ] is filled in by hand in Apollo before an email is approved. The script creates this sequence inactive, with every email waiting for review.",
   "max_emails_per_day": 5,
   "steps": [

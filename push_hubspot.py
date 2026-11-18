@@ -5,7 +5,7 @@ same domain and updates it, or creates one if there is none, so running again cr
 duplicates. The score, the reasons for it and the doubts the rules had (signal_flags) go
 into custom company properties named signal_*, which the script creates if they are missing.
 
-`signal_stage` is the owner's working status (new, reviewed, ready_to_contact, contacted,
+`signal_stage` is the reviewer's working status (new, reviewed, ready_to_contact, contacted,
 rejected). It is set to "new" only when a company is created. Later runs never change it,
 and they never change a company's name or domain either, so edits made in HubSpot survive.
 
@@ -193,12 +193,12 @@ def missing_scopes(data: Any) -> list[str]:
 
 
 def property_list() -> str:
-    """The properties this script needs, for the owner to create by hand if they prefer."""
+    """The properties this script needs, for the reviewer to create by hand if they prefer."""
     return "; ".join(f"{spec['name']} ({spec['fieldType']})" for spec in PROPERTIES)
 
 
 def scope_message(action: str, data: Any) -> str:
-    """What to tell the owner when HubSpot refuses a request with HTTP 403."""
+    """What to tell the reviewer when HubSpot refuses a request with HTTP 403."""
     scope = SCOPES[action]
     said = data.get("message", "") if isinstance(data, dict) else str(data)[:300]
     listed = [name for name in missing_scopes(data) if name != scope]

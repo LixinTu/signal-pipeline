@@ -15,7 +15,7 @@ step 3 then sends every match whose TheirStack city is not a Bay Area city to re
 Hiring-first search: --core-roles keeps only the titles a company without a Form D filing
 needs to become an account (forward deployed and applied AI engineers), and
 --one-per-company asks for one job at a time and leaves out every company already
-received, so each credit buys one new company. Companies the owner rejected in
+received, so each credit buys one new company. Companies the reviewer rejected in
 data/manual/review_decisions.csv are left out of every search.
 
 Usage:
@@ -143,7 +143,7 @@ def base_body(days: int, funded_since: str | None, company_names: list[str] | No
     if any_hq_city:
         del body["company_location_pattern_or"]  # the Form D address places HQ instead
     if excluded_names:
-        body["company_name_not"] = sorted(excluded_names)  # exact names the owner rejected
+        body["company_name_not"] = sorted(excluded_names)  # exact names the reviewer rejected
     return body
 
 
@@ -433,7 +433,7 @@ def main(argv: list[str] | None = None) -> int:
         log.error("%s", err)
         return 1
     if excluded_names:
-        log.info("Leaving out %d company name(s) the owner rejected.", len(excluded_names))
+        log.info("Leaving out %d company name(s) the reviewer rejected.", len(excluded_names))
     company_names = None
     if args.funded_companies:
         try:

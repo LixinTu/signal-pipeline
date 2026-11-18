@@ -1,0 +1,2 @@
+run_date,trigger,status,minutes,filings_read,credits_spent,companies_with_posting,accounts,funded_and_hiring,hiring_only,flagged,new_accounts,hubspot_created,hubspot_updated,digest_listed,postings_checked,postings_still_open,run_url
+2026-11-18,workflow_dispatch,success,13.4,1347,2,2,2,1,1,0,,1,1,6,,,https://github.com/LixinTu/signal-pipeline/actions/runs/44243096148

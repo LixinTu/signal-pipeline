@@ -23,6 +23,7 @@ import requests  # noqa: E402
 tmp = Path(tempfile.mkdtemp(prefix="sim_contacts_"))
 fc.ACCOUNTS_CSV, fc.JOBS_CSV = tmp / "accounts.csv", tmp / "jobs.csv"
 fc.CONTACTS_CSV, fc.RAW_DIR = tmp / "contacts" / "contacts.csv", tmp / "raw"
+fc.OUTCOMES_CSV = tmp / "contacts" / "contact_outcomes.csv"
 fc.load_dotenv = lambda *args, **kwargs: False      # never load a real .env
 SLEEPS, results = [], []
 fc.time.sleep = lambda seconds: SLEEPS.append(seconds)
@@ -287,7 +288,76 @@ fc.main(["--limit", "1"])
 check("without the cost header the usual cost is assumed, and the log says so",
       logged("credits used by this run: 1 (estimated, no cost header)"))
 
-# 6. what the script is able to do at all
+# 6. --outcomes-only: coverage is measured and no personal data is written anywhere
+# every SIMULATED first name, last name, email and position a run could save; "founder or CEO" is the
+# target's label, not a person's position, so the position is matched by "Co-Founder"
+PERSONAL = r"Simon|Bravo|Simone|Charlie|Simeon|Delta|@|Co-Founder|VP Engineering|Office Manager"
+
+
+def outcomes():
+    return pd.read_csv(fc.OUTCOMES_CSV, dtype=str, keep_default_na=False).set_index("company_name")
+
+
+def written():
+    return "".join(file.read_text() for file in list(fc.RAW_DIR.glob("*.json")) + list(fc.CONTACTS_CSV.parent.glob("*.csv")))
+
+
+def again():
+    """Forget the calls and the log, keep every file."""
+    SimHunter.calls, SimHunter.planned, SimHunter.used = [], [], 4.0
+    H.lines.clear()
+
+
+fresh()
+code = fc.main(["--outcomes-only"])
+table = outcomes()
+check("--outcomes-only exits 0 and writes its own file with no personal columns; contacts.csv is not written",
+      code == 0 and list(pd.read_csv(fc.OUTCOMES_CSV).columns) == fc.OUTCOME_COLUMNS and not fc.CONTACTS_CSV.exists()
+      and not set(fc.PERSONAL_COLUMNS) & set(fc.OUTCOME_COLUMNS))
+check("the outcome per company is the same as in a normal run",
+      list(table["result"]) == ["title match", "title match", "other role", "none", "skipped: no domain"]
+      and list(table["verification_status"]) == ["accept_all", "valid", "unknown", "", ""]
+      and list(table["contacts_returned"]) == ["2", "4", "1", "0", ""])
+check("no name, email or position is in any saved file, the saved answers included",
+      len(list(fc.RAW_DIR.glob("hunter_domain_search_*.json"))) == 6 and not re.search(PERSONAL, written()))
+check("the log says so and names nobody",
+      logged("Outcomes only: no name, email or position was written.") and logged("5 companies. A contact in the target "
+             "role: 2. In the right team but not its lead: 0. In another role: 1. No contact: 1. Skipped: 1.")
+      and not any(re.search(PERSONAL.replace("|@", ""), line) for line in H.lines))
+again()
+code = fc.main(["--outcomes-only"])
+check("a second --outcomes-only run reads its own saved answers and spends nothing",
+      code == 0 and searches() == [] and logged("credits used by this run: 0")
+      and list(outcomes()["result"]) == ["title match", "title match", "other role", "none", "skipped: no domain"])
+again()
+fc.main(["--outcomes-only", "--companies", "Sixth"])
+check("outcomes add up across runs", list(outcomes().index) == ["Tiny", "Mid", "Big", "Empty", "NoDomain", "Sixth"])
+shutil.rmtree(fc.RAW_DIR)
+again()
+fc.main(["--outcomes-only", "--max-credits", "1"])
+check("a company skipped in a later run keeps the result it already has",
+      searches() == [("tiny.example", "targeted")] and list(outcomes()["result"])[:3] == ["title match", "title match", "other role"])
+fresh()
+fc.main(["--outcomes-only"])
+again()
+shutil.rmtree(fc.CONTACTS_CSV.parent)
+code = fc.main([])
+check("a normal run cannot use a saved answer that holds no person: it asks again, except where nobody was found",
+      code == 0 and searches() == [("tiny.example", "targeted"), ("mid.example", "wide"), ("big.example", "targeted")]
+      and contacts().loc["Tiny", "last_name"] == "Bravo" and contacts().loc["Empty", "result"] == "none")
+again()
+shutil.rmtree(fc.CONTACTS_CSV.parent)
+code = fc.main(["--outcomes-only"])
+check("--outcomes-only can use an answer saved by a normal run, and still writes no personal data of its own",
+      code == 0 and searches() == [] and not re.search(PERSONAL, fc.OUTCOMES_CSV.read_text())
+      and list(outcomes()["result"]) == ["title match", "title match", "other role", "none", "skipped: no domain"])
+IGNORED["value"] = False
+fresh()
+check("--outcomes-only also refuses to run when git does not ignore its output",
+      fc.main(["--outcomes-only"]) == 1 and SimHunter.calls == [] and logged("git does not ignore"))
+IGNORED["value"] = True
+
+# 7. what the script is able to do at all
 source = (PROJECT / "find_contacts.py").read_text(encoding="utf-8")
 check("the script knows two Hunter endpoints only and never posts",
       sorted(set(re.findall(r"https://api\.hunter\.io[^\"'\s)]*", source)))

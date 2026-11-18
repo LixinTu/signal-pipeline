@@ -1,13 +1,17 @@
 """Join recent Form D funding with open AI engineering jobs and score the accounts (step 3).
 
 Reads data/funding.csv (step 2), data/jobs.csv (step 1), the SEC search pages saved in
-data/raw/ (for EDGAR's business city) and two files the owner fills in by hand, if they
-exist:
-- data/manual/mandarin_leads.csv (company_name, evidence)
+data/raw/ (for EDGAR's business city) and three files the reviewer fills in by hand, if
+they exist:
+- data/manual/client_bonus.csv (company_name, evidence): evidence for the one bonus signal
+  that the client defines. It is confirmed by hand and never inferred.
 - data/manual/review_decisions.csv (company_name, form_d_issuer, decision, reason), the
-  owner's overrides: "accept" confirms one Form D match or, with form_d_issuer blank, keeps
+  reviewer's overrides: "accept" confirms one Form D match or, with form_d_issuer blank, keeps
   a company the rules would drop; "reject" refuses one match or, with form_d_issuer blank,
   leaves the company out everywhere (the block list).
+- data/manual/domain_overrides.csv (company_name, domain, reason): the website to use when
+  TheirStack's is wrong. The account shows the corrected domain and says so in `flags`;
+  name matching still uses TheirStack's own data.
 
 Writes three files:
 - data/accounts.csv: one row per company, with its score, the reasons for it and, in
@@ -65,8 +69,9 @@ ROOT = Path(__file__).resolve().parent
 FUNDING_CSV = ROOT / "data" / "funding.csv"
 JOBS_CSV = ROOT / "data" / "jobs.csv"
 RAW_DIR = ROOT / "data" / "raw"
-MANDARIN_CSV = ROOT / "data" / "manual" / "mandarin_leads.csv"
+CLIENT_BONUS_CSV = ROOT / "data" / "manual" / "client_bonus.csv"
 REVIEW_DECISIONS_CSV = ROOT / "data" / "manual" / "review_decisions.csv"
+DOMAIN_OVERRIDES_CSV = ROOT / "data" / "manual" / "domain_overrides.csv"
 ACCOUNTS_CSV = ROOT / "data" / "accounts.csv"
 REVIEW_CSV = ROOT / "data" / "review_matches.csv"
 FUNNEL_CSV = ROOT / "data" / "funnel.csv"
@@ -97,14 +102,14 @@ CONFIG: dict[str, Any] = {
     "points_per_role": 1,
     "max_role_points": 3,
     "fde_points": 1,
-    "mandarin_points": 2,
+    "client_bonus_points": 2,   # one signal the client defines, confirmed by hand
 }
 
 ACCOUNT_COLUMNS = [
     "company_name", "domain", "signal_tier", "hq_location", "filing_date", "amount_sold_usd",
     "theirstack_funding",
     "relevant_roles_count", "role_titles", "fde_opening", "job_locations", "salary_ranges",
-    "theirstack_jobs_last_30_days", "company_description", "mandarin_lead_evidence",
+    "theirstack_jobs_last_30_days", "company_description", "client_bonus_evidence",
     "score", "score_reason", "flags", "source_urls",
 ]
 REVIEW_COLUMNS = [
@@ -149,7 +154,7 @@ def bay_area_filings(funding: pd.DataFrame, locations: dict[str, str]) -> pd.Dat
     the minimum sold. `form_d_hq` says how HQ was placed: "zip" from the filing's ZIP code,
     or "edgar_city" when the address is outside California but EDGAR's business city is in
     the Bay Area (review only). `in_amount_range` is False for a stage above the amount
-    rule: such a filing cannot make an account by itself, but it is shown to the owner."""
+    rule: such a filing cannot make an account by itself, but it is shown to the reviewer."""
     table = funding.copy()
     sold = pd.to_numeric(table["amount_sold_usd"], errors="coerce")
     table["edgar_business_location"] = table["accession_number"].map(locations).fillna("")
@@ -172,7 +177,7 @@ def candidate_filings(funding: pd.DataFrame, locations: dict[str, str]) -> pd.Da
 
 def search_list(funding_csv: Path | None = None, raw_dir: Path | None = None) -> tuple[list[str], int]:
     """Name spellings to send to TheirStack for every candidate company, sorted, and the
-    number of companies. Spellings of a company the owner rejected are left out. Raises
+    number of companies. Spellings of a company the reviewer rejected are left out. Raises
     FileNotFoundError if step 2 has not run."""
     candidates = candidate_filings(read_table(funding_csv or FUNDING_CSV), edgar_locations(raw_dir))
     issuers = candidates.drop_duplicates("cik")["issuer_name"]
@@ -198,10 +203,10 @@ def spelling_index(candidates: pd.DataFrame) -> dict[str, list[tuple[str, bool]]
     return index
 
 
-def mandarin_evidence(path: Path | None = None) -> dict[str, str]:
-    """Evidence of a Mandarin-speaking founder or lead, confirmed by the owner, by cleaned
-    company name. The file is filled in by hand; rows without evidence are ignored."""
-    path = path or MANDARIN_CSV
+def client_bonus_evidence(path: Path | None = None) -> dict[str, str]:
+    """Evidence for the client-specific bonus, confirmed by the reviewer, by cleaned company
+    name. The file is filled in by hand; rows without evidence are ignored."""
+    path = path or CLIENT_BONUS_CSV
     if not path.exists():
         return {}
     table = read_table(path)
@@ -212,7 +217,7 @@ def mandarin_evidence(path: Path | None = None) -> dict[str, str]:
 
 
 def review_decisions(path: Path | None = None) -> dict[tuple[str, str], tuple[str, str]]:
-    """The owner's overrides, as (decision, reason) by (cleaned TheirStack company name,
+    """The reviewer's overrides, as (decision, reason) by (cleaned TheirStack company name,
     cleaned Form D issuer). With an issuer, "accept" confirms that Form D match and "reject"
     refuses it. With the issuer blank, "reject" leaves the company out everywhere and
     "accept" keeps a company the rules would drop; a blank-issuer accept never confirms a
@@ -236,8 +241,30 @@ def review_decisions(path: Path | None = None) -> dict[tuple[str, str], tuple[st
     return decisions
 
 
+def domain_overrides(path: Path | None = None) -> dict[str, tuple[str, str]]:
+    """Websites corrected by the reviewer, as (domain, reason) by cleaned company name. The
+    file is filled in by hand. Raises ValueError for a missing column, an empty name, a
+    value that is not a domain or a company listed twice."""
+    path = path or DOMAIN_OVERRIDES_CSV
+    if not path.exists():
+        return {}
+    table = read_table(path)
+    needed = ["company_name", "domain", "reason"]
+    if not set(needed) <= set(table.columns):
+        raise ValueError(f"{path.name} needs the columns {', '.join(needed)}")
+    overrides: dict[str, tuple[str, str]] = {}
+    for line, row in enumerate(table.itertuples(), start=2):
+        key, domain = clean_name(row.company_name), row.domain.strip().lower()
+        if not key or not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", domain):
+            raise ValueError(f"{path.name} line {line}: needs a company_name and a domain such as example.com")
+        if key in overrides:
+            raise ValueError(f"{path.name} line {line}: this company already has a domain above")
+        overrides[key] = (domain, " ".join(row.reason.replace(";", ",").split()))   # a flag never holds "; "
+    return overrides
+
+
 def rejected_company_names(path: Path | None = None) -> list[str]:
-    """Company names, as the owner wrote them, rejected for every Form D issuer. Step 1
+    """Company names, as the reviewer wrote them, rejected for every Form D issuer. Step 1
     leaves them out of its searches, so their jobs cost no credits."""
     path = path or REVIEW_DECISIONS_CSV
     if not path.exists():
@@ -257,7 +284,7 @@ def distinct_titles(titles: pd.Series) -> list[str]:
     return sorted(unique.values(), key=str.lower)
 
 
-def score_account(first_sale: str, filing_date: str, roles: int, has_fde: bool, mandarin: str,
+def score_account(first_sale: str, filing_date: str, roles: int, has_fde: bool, bonus_evidence: str,
                   as_of: date) -> tuple[int, str]:
     """Score one account with the weights in CONFIG; return the score and its reasons."""
     reasons = []
@@ -277,10 +304,10 @@ def score_account(first_sale: str, filing_date: str, roles: int, has_fde: bool, 
     reasons.append(f"{roles} relevant role title(s): +{role_points}{capped}")
     fde = CONFIG["fde_points"] if has_fde else 0
     reasons.append(f"FDE opening: +{fde}" if has_fde else "no FDE opening: +0")
-    lead = CONFIG["mandarin_points"] if mandarin else 0
-    reasons.append(f"Mandarin-speaking lead confirmed by the owner (hand-edited): +{lead}" if mandarin
-                   else "no Mandarin-lead evidence: +0")
-    return recency + role_points + fde + lead, "; ".join(reasons)
+    bonus = CONFIG["client_bonus_points"] if bonus_evidence else 0
+    reasons.append(f"client-specific bonus confirmed by the reviewer (hand-edited): +{bonus}" if bonus_evidence
+                   else "no client-specific bonus evidence: +0")
+    return recency + role_points + fde + bonus, "; ".join(reasons)
 
 
 def own_site_first(jobs: pd.DataFrame) -> pd.DataFrame:
@@ -419,7 +446,7 @@ def funnel_table(total: int, block_list: int, no_core_role: int, no_bay_area_hq:
     not add up to the total, which would mean a company was lost or counted twice."""
     rows = [
         ("companies with a relevant posting", total),
-        ("on the owner's block list", block_list),
+        ("on the reviewer's block list", block_list),
         ("dropped: no usable Form D filing and no core role", no_core_role),
         ("dropped: no Bay Area HQ", no_bay_area_hq),
         ("dropped: posts jobs for other companies", posts_for_other_companies),
@@ -430,17 +457,19 @@ def funnel_table(total: int, block_list: int, no_core_role: int, no_bay_area_hq:
     return rows
 
 
-def build(filings: pd.DataFrame, jobs: pd.DataFrame, mandarin: dict[str, str], as_of: date,
+def build(filings: pd.DataFrame, jobs: pd.DataFrame, bonus: dict[str, str], as_of: date,
           decisions: dict[tuple[str, str], tuple[str, str]] | None = None,
+          domains: dict[str, tuple[str, str]] | None = None,
           ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     """Join relevant jobs to Form D filings by name; return the accounts, the rows the rules
     left out or did not use, and counts.
 
     `filings` comes from bay_area_filings() (or candidate_filings()); `decisions` are the
-    owner's overrides, from review_decisions(). Rules decide every uncertain case, so no
+    reviewer's overrides, from review_decisions(). Rules decide every uncertain case, so no
     company waits for a person: a doubt about a listed company goes into its `flags`.
+    `domains` are the hand-corrected websites, from domain_overrides().
     """
-    decisions = decisions or {}
+    decisions, domains = decisions or {}, domains or {}
     index = spelling_index(filings)
     by_cik = {cik: group.sort_values(["first_sale_date", "filing_date"], ascending=False)
               for cik, group in filings.groupby("cik")}
@@ -456,7 +485,7 @@ def build(filings: pd.DataFrame, jobs: pd.DataFrame, mandarin: dict[str, str], a
               for _, company_jobs in postings.groupby("company_key")]
     companies_per_cik = Counter(cik for _, matches in groups for cik, _ in matches)
 
-    accounts, review, accepted, rejected, used = [], [], [], [], set()
+    accounts, review, accepted, rejected, used, corrected = [], [], [], [], set(), set()
     dropped: Counter[str] = Counter()
 
     def account_row(facts: dict[str, Any], tier: str, hq: str, primary: Any, filing_urls: list[str],
@@ -469,7 +498,7 @@ def build(filings: pd.DataFrame, jobs: pd.DataFrame, mandarin: dict[str, str], a
             "relevant_roles_count": len(facts["titles"]), "role_titles": "; ".join(facts["titles"]),
             "fde_opening": facts["has_fde"], "job_locations": facts["locations"],
             "salary_ranges": facts["salaries"], "theirstack_jobs_last_30_days": facts["recent_jobs"],
-            "company_description": facts["description"], "mandarin_lead_evidence": evidence,
+            "company_description": facts["description"], "client_bonus_evidence": evidence,
             "score": score, "score_reason": reason, "flags": "; ".join(flags),   # no flag contains "; "
             "source_urls": " ".join(filing_urls + facts["job_urls"]),
             "_first_sale": "" if primary is None else primary["first_sale_date"],
@@ -501,9 +530,9 @@ def build(filings: pd.DataFrame, jobs: pd.DataFrame, mandarin: dict[str, str], a
             rejected.append(f"{facts['name']}: {company_why}" if company_why else facts["name"])
             continue
 
-        # 1. Which Form D issuer, if any, is this company? The owner's accept, a full name that
+        # 1. Which Form D issuer, if any, is this company? The reviewer's accept, a full name that
         #    fits one issuer only, or a short form that another field confirms.
-        usable: list[tuple[int, str, str, str]] = []   # (rank, cik, how it was confirmed, the owner's reason)
+        usable: list[tuple[int, str, str, str]] = []   # (rank, cik, how it was confirmed, the reviewer's reason)
         unused: list[tuple[str, str]] = []             # (cik, why the match is not used)
         for cik, is_full in matches:
             issuer = by_cik[cik].iloc[0]["issuer_name"]
@@ -512,9 +541,9 @@ def build(filings: pd.DataFrame, jobs: pd.DataFrame, mandarin: dict[str, str], a
             if decision:
                 used.add(join_key)
             if decision == "accept":
-                usable.append((0, cik, "owner", why))
+                usable.append((0, cik, "reviewer", why))
             elif decision == "reject":
-                unused.append((cik, "the owner rejected this match" + (f": {why}" if why else "")))
+                unused.append((cik, "the reviewer rejected this match" + (f": {why}" if why else "")))
             elif companies_per_cik[cik] > 1:
                 unused.append((cik, "several TheirStack companies match this issuer"))
             elif is_full and len(matches) == 1:
@@ -535,7 +564,7 @@ def build(filings: pd.DataFrame, jobs: pd.DataFrame, mandarin: dict[str, str], a
             best = []
         else:
             unused += [(cik, "another Form D issuer fits this company better") for _, cik, _, _ in usable[1:]]
-        kept_by_owner = company_decision == "accept" or bool(best and best[0][2] == "owner")
+        kept_by_reviewer = company_decision == "accept" or bool(best and best[0][2] == "reviewer")
 
         def leave_out(tier: str, reasons: list[str], primary: Any) -> None:
             """Record why this company is not listed: one row, or one per unused Form D match."""
@@ -548,13 +577,13 @@ def build(filings: pd.DataFrame, jobs: pd.DataFrame, mandarin: dict[str, str], a
         # 2. Funding and HQ
         flags: list[str] = []
         if best:
-            _, cik, how, owner_why = best[0]
+            _, cik, how, reviewer_why = best[0]
             issuer_filings = by_cik[cik]
             in_range = issuer_filings[issuer_filings["in_amount_range"]]
             above = issuer_filings[~issuer_filings["in_amount_range"]]
-            primary = (issuer_filings if how == "owner" or in_range.empty else in_range).iloc[0]
+            primary = (issuer_filings if how == "reviewer" or in_range.empty else in_range).iloc[0]
             tier, filing_urls = "funded_and_hiring", list(issuer_filings["filing_url"])
-            if how not in ("owner", "full name"):
+            if how not in ("reviewer", "full name"):
                 flags.append(f"matched on a short form of the Form D name, confirmed by the company's {how}")
             if not above.empty:
                 largest = pd.to_numeric(above["amount_sold_usd"], errors="coerce").max()
@@ -569,40 +598,48 @@ def build(filings: pd.DataFrame, jobs: pd.DataFrame, mandarin: dict[str, str], a
             hq = (f"{primary['edgar_business_location']} (EDGAR business address)"
                   if primary["form_d_hq"] == "edgar_city" else
                   f"{primary['city'].title()}, {primary['state']} {primary['zip_code']}".strip())
-            evidence = mandarin.get(name_key) or mandarin.get(clean_name(primary["issuer_name"]), "")
+            evidence = bonus.get(name_key) or bonus.get(clean_name(primary["issuer_name"]), "")
         else:
-            primary, tier, filing_urls, how, owner_why = None, "hiring_only", [], "", ""
+            primary, tier, filing_urls, how, reviewer_why = None, "hiring_only", [], "", ""
             if not company_jobs["role_category"].isin(CONFIG["hiring_only_roles"]).any():
                 dropped["no_core_role"] += 1   # no usable Form D filing and no core role: not an account
                 review.extend(review_row(facts, tier, "not listed", [problem, "no core role"], by_cik[cik].iloc[0])
                               for cik, problem in unused)
                 continue
             doubts = hq_doubts(facts)
-            if doubts and not kept_by_owner:
+            if doubts and not kept_by_reviewer:
                 dropped["no_bay_area_hq"] += 1
                 leave_out(tier, ["no Form D filing places the HQ, and " + doubts[0]] + doubts[1:], None)
                 continue
             flags += doubts
             hq = f"{facts['city']} (TheirStack" + (f", ZIP {facts['postal_code']})" if facts["postal_code"] else ")")
-            evidence = mandarin.get(name_key, "")
+            evidence = bonus.get(name_key, "")
 
         # 3. Staffing and services firms: flagged, and dropped when they post jobs for others
         services = services_doubts(facts)
         too_many = posts_for_others(facts) if services else ""
-        if too_many and not kept_by_owner:
+        if too_many and not kept_by_reviewer:
             dropped["posts_for_others"] += 1
             leave_out(tier, [f"posts jobs for other companies ({too_many})"] + services, primary)
             continue
         flags += services + ([too_many] if too_many else [])
 
-        # 4. Score and list
+        # 4. A website corrected by hand replaces TheirStack's in the row, and the flag says so
+        if name_key in domains:
+            domain, why = domains[name_key]
+            flags.append(f"website set by the reviewer (hand-edited): {domain} instead of TheirStack's "
+                         f"{facts['domain'] or 'empty domain'}" + (f", {why}" if why else ""))
+            facts = {**facts, "domain": domain}
+            corrected.add(name_key)
+
+        # 5. Score and list
         first_sale, filing_date = ("", "") if primary is None else (primary["first_sale_date"], primary["filing_date"])
         score, reason = score_account(first_sale, filing_date, len(facts["titles"]), facts["has_fde"], evidence, as_of)
-        if how == "owner":
-            reason += "; match confirmed by the owner (hand-edited)" + (f": {owner_why}" if owner_why else "")
+        if how == "reviewer":
+            reason += "; match confirmed by the reviewer (hand-edited)" + (f": {reviewer_why}" if reviewer_why else "")
         elif company_decision == "accept":
-            reason += "; accepted by the owner (hand-edited)" + (f": {company_why}" if company_why else "")
-        if kept_by_owner:
+            reason += "; accepted by the reviewer (hand-edited)" + (f": {company_why}" if company_why else "")
+        if kept_by_reviewer:
             accepted.append(facts["name"])
         accounts.append(account_row(facts, tier, hq, primary, filing_urls, score, reason, evidence, flags))
         review.extend(review_row(facts, tier, "listed without this filing", [problem], by_cik[cik].iloc[0])
@@ -631,9 +668,11 @@ def build(filings: pd.DataFrame, jobs: pd.DataFrame, mandarin: dict[str, str], a
         "dropped_no_bay_area_hq": dropped["no_bay_area_hq"],
         "dropped_posts_for_others": dropped["posts_for_others"],
         "review_rows": len(review_table),
-        "accepted_by_owner": accepted,
-        "rejected_by_owner": rejected,
+        "accepted_by_reviewer": accepted,
+        "rejected_by_reviewer": rejected,
         "unused_decisions": len(set(decisions) - used),
+        "corrected_domains": len(corrected),
+        "unused_domain_overrides": len(set(domains) - corrected),
         "funnel": funnel_table(len(groups), len(rejected), dropped["no_core_role"], dropped["no_bay_area_hq"],
                                dropped["posts_for_others"], len(account_table)),
     }
@@ -662,14 +701,15 @@ def main(argv: list[str] | None = None) -> int:
             log.error("%s is missing; run %s first.", shown(path), step)
             return 1
     try:
-        mandarin = mandarin_evidence()
+        bonus = client_bonus_evidence()
         decisions = review_decisions()
+        domains = domain_overrides()
     except ValueError as err:
         log.error("%s", err)
         return 1
     filings = bay_area_filings(read_table(FUNDING_CSV), edgar_locations())
     try:
-        accounts, review, counts = build(filings, read_table(JOBS_CSV), mandarin, args.as_of, decisions)
+        accounts, review, counts = build(filings, read_table(JOBS_CSV), bonus, args.as_of, decisions, domains)
     except RuntimeError as err:   # the funnel does not add up: write nothing
         log.error("%s", err)
         return 1
@@ -693,19 +733,24 @@ def main(argv: list[str] | None = None) -> int:
              shown(REVIEW_CSV), counts["review_rows"])
     log.info("Accounts by tier: %d funded and hiring, %d hiring only (no Form D filing used). %d account(s) "
              "carry a flag.", counts["funded_accounts"], counts["hiring_only_accounts"], counts["flagged_accounts"])
-    log.info("Funnel: %d companies with a relevant posting = %d listed + %d on the owner's block list + %d with "
+    log.info("Funnel: %d companies with a relevant posting = %d listed + %d on the reviewer's block list + %d with "
              "no usable filing and no core role + %d without a Bay Area HQ + %d posting jobs for other companies "
-             "(%s).", counts["companies_with_relevant_jobs"], counts["accounts"], len(counts["rejected_by_owner"]),
+             "(%s).", counts["companies_with_relevant_jobs"], counts["accounts"], len(counts["rejected_by_reviewer"]),
              counts["no_filing_no_core_role"], counts["dropped_no_bay_area_hq"], counts["dropped_posts_for_others"],
              shown(FUNNEL_CSV))
     if decisions:
-        log.info("Owner's decisions (%s): %d kept or confirmed, %d on the block list.", shown(REVIEW_DECISIONS_CSV),
-                 len(counts["accepted_by_owner"]), len(counts["rejected_by_owner"]))
+        log.info("Reviewer's decisions (%s): %d kept or confirmed, %d on the block list.", shown(REVIEW_DECISIONS_CSV),
+                 len(counts["accepted_by_reviewer"]), len(counts["rejected_by_reviewer"]))
     if counts["unused_decisions"]:
         log.warning("%d row(s) in %s match no company or Form D match in this run; check the names.",
                     counts["unused_decisions"], shown(REVIEW_DECISIONS_CSV))
-    if not mandarin:
-        log.info("No Mandarin-lead evidence file (%s), so no company gets those points.", shown(MANDARIN_CSV))
+    if domains:
+        log.info("Websites corrected by hand (%s): %d used.", shown(DOMAIN_OVERRIDES_CSV), counts["corrected_domains"])
+    if counts["unused_domain_overrides"]:
+        log.warning("%d row(s) in %s match no listed company in this run; check the names.",
+                    counts["unused_domain_overrides"], shown(DOMAIN_OVERRIDES_CSV))
+    if not bonus:
+        log.info("No client-specific bonus file (%s), so no company gets those points.", shown(CLIENT_BONUS_CSV))
     return 0
 
 

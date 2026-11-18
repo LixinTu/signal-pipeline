@@ -1,14 +1,14 @@
 """Create one email sequence in Apollo as an inactive draft (outreach tooling, not a pipeline step).
 
-Reads automation/apollo/project2_sequence.json, the three draft emails for the owner's own
-outreach, and creates the sequence through Apollo's API so the owner does not have to build
+Reads automation/apollo/outreach_sequence.json, the three draft emails for the sender's own
+outreach, and creates the sequence through Apollo's API so the sender does not have to build
 it by hand.
 
 What this script cannot do, on purpose:
 - It never sends an email. The sequence is created with `active: false` and every email
   with the status `to_be_reviewed`, which Apollo does not send.
 - It has no code that adds contacts to a sequence, activates one or approves an email.
-  Those three actions stay with the owner, in Apollo, for every batch.
+  Those three actions stay with the sender, in Apollo, for every batch.
 - It creates a sequence once. The id is kept in data/raw/apollo_sequence_ids.json, and a
   second run for the same name stops instead of making a duplicate.
 
@@ -44,7 +44,7 @@ import requests
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent
-DEFINITION_JSON = ROOT / "automation" / "apollo" / "project2_sequence.json"
+DEFINITION_JSON = ROOT / "automation" / "apollo" / "outreach_sequence.json"
 RAW_DIR = ROOT / "data" / "raw"
 IDS_JSON = RAW_DIR / "apollo_sequence_ids.json"   # sequence name -> id, so a re-run creates nothing
 KEY_ENV = "APOLLO_API_KEY"
@@ -101,7 +101,7 @@ def load_definition(path: Path | None = None) -> dict[str, Any]:
         if step["thread"] == "new_thread" and not str(step.get("subject", "")).strip():
             raise ValueError(f"{where}: an email that starts a thread needs a subject")
         if "status" in step:
-            raise ValueError(f"{where}: 'status' is not allowed here. Emails are approved by the owner in Apollo.")
+            raise ValueError(f"{where}: 'status' is not allowed here. Emails are approved by the sender in Apollo.")
     return definition
 
 

@@ -109,6 +109,14 @@ check("fetch_funding uses the shared ZIP rule", ff.hq_zip_check is bay_area.hq_z
 check("ZIP+4 94107-1234 -> bay_area", bay_area.hq_zip_check("94107-1234") == "bay_area")
 check("Glendale 91206 -> outside", bay_area.hq_zip_check("91206") == "outside")
 check("blank ZIP -> missing", bay_area.hq_zip_check("  ") == "missing")
+check("Los Angeles, San Diego, Fresno, Sacramento, New York and Seattle ZIP codes -> outside",
+      [bay_area.hq_zip_check(code) for code in ("90012", "92101", "93721", "95814", "10001", "98101")] == ["outside"] * 6)
+check("San Francisco, Palo Alto, Oakland, San Jose and Santa Rosa ZIP codes -> bay_area",
+      [bay_area.hq_zip_check(code) for code in ("94105", "94301", "94612", "95113", "95401")] == ["bay_area"] * 5)
+other_file = hit("0009990000-26-000099")
+other_file["_id"] = other_file["_id"].replace("primary_doc.xml", "primary_doc.html")
+check("a search hit whose document is not an XML file is not read as a filing",
+      ff.hit_to_filing(hit("0009990000-26-000099")) is not None and ff.hit_to_filing(other_file) is None)
 
 # 2. stage estimate cut-offs
 for amount, want in {None: "Unknown", 0: "Unknown", 4_999_999: "Seed", 5_000_000: "Series A",

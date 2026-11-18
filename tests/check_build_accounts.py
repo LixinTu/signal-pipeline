@@ -1,8 +1,14 @@
 """Offline checks for build_accounts.py (step 3). Every filing, job and SEC search page here
 is SIMULATED, in a temporary folder; the project's data/ is never read or written.
 
+The top of this fixture's output is also the SIMULATED sample a reader finds in
+docs/sample_output/accounts_SIMULATED.csv. One check compares the two, so the sample cannot
+drift from what the script writes.
+
 Run: python tests/check_build_accounts.py
+     python tests/check_build_accounts.py --write-sample   # rewrite the sample after a wanted change
 """
+import io
 import json
 import shutil
 import sys
@@ -19,7 +25,8 @@ from fetch_jobs import COLUMNS as JOB_COLUMNS  # noqa: E402
 
 tmp = Path(tempfile.mkdtemp(prefix="sim_accounts_"))
 ba.FUNDING_CSV, ba.JOBS_CSV, ba.RAW_DIR = tmp / "funding.csv", tmp / "jobs.csv", tmp / "raw"
-ba.MANDARIN_CSV = tmp / "manual" / "mandarin_leads.csv"
+ba.CLIENT_BONUS_CSV = tmp / "manual" / "client_bonus.csv"
+ba.DOMAIN_OVERRIDES_CSV = tmp / "manual" / "domain_overrides.csv"
 ba.REVIEW_DECISIONS_CSV = tmp / "manual" / "review_decisions.csv"
 ba.ACCOUNTS_CSV, ba.REVIEW_CSV, ba.FUNNEL_CSV = tmp / "accounts.csv", tmp / "review_matches.csv", tmp / "funnel.csv"
 AS_OF = date(2026, 11, 16)
@@ -119,6 +126,10 @@ page = {"response": {"hits": {"hits": [
 (ba.RAW_DIR / "sec_search_2026-11-16T000000Z_sim_from00000.json").write_text(json.dumps(page))
 (ba.RAW_DIR / "sec_search_2026-11-16T000001Z_bad_from00100.json").write_text("{not json")
 
+check("a Bay Area city name in another state is not a Bay Area city",
+      ba.is_bay_area_city("Oakland, CA") and not ba.is_bay_area_city("Oakland, NJ") and not ba.is_bay_area_city("San Jose, NM")
+      and not ba.is_bay_area_city("Oakland"))
+
 # 1. candidate filings
 locations = ba.edgar_locations()
 check("EDGAR locations read; a corrupt page is skipped", len(locations) == 2)
@@ -139,14 +150,22 @@ check("filings that cannot become accounts are not searched", "Hotel Tiny" not i
 check("search list is sorted", spellings == sorted(spellings, key=str.lower))
 
 # 3. join and score: rules decide, nothing waits for a person
-mandarin = {"charlie labs": "SIMULATED evidence: interview in Chinese, https://news.example/1"}
-accounts, review, counts = ba.build(candidates, jobs, mandarin, AS_OF)
+bonus = {"charlie labs": "SIMULATED evidence: named in the client's brief, https://news.example/1"}
+accounts, review, counts = ba.build(candidates, jobs, bonus, AS_OF)
 order = accounts["company_name"].tolist()
 check("accounts.csv has the planned columns, flags among them",
       list(accounts.columns) == ba.ACCOUNT_COLUMNS and "flags" in ba.ACCOUNT_COLUMNS)
 check("accounts sorted by score, ties by newer first sale, then name",
       order == ["Charlie Labs", "Alpha Robotics", "Golf", "Kilo Software", "Papa", "Bravo AI", "Delta Systems",
                 "Echo", "Foxtrot"])
+SAMPLE = Path(__file__).resolve().parent.parent / "docs" / "sample_output" / "accounts_SIMULATED.csv"
+sample_text = accounts.head(5).to_csv(index=False)
+if "--write-sample" in sys.argv:
+    SAMPLE.parent.mkdir(parents=True, exist_ok=True)
+    SAMPLE.write_text(sample_text, encoding="utf-8")
+as_table = lambda source: pd.read_csv(source, dtype=str, keep_default_na=False)  # noqa: E731  (cells compared, not bytes)
+check("docs/sample_output/accounts_SIMULATED.csv is the first 5 rows of this output (rewrite it with --write-sample)",
+      SAMPLE.exists() and as_table(SAMPLE).equals(as_table(io.StringIO(sample_text))) and len(as_table(SAMPLE)) == 5)
 row = accounts.set_index("company_name")
 reason = row["score_reason"]
 check("30 days -> +3", "30 days before 2026-11-16: +3" in reason["Alpha Robotics"])
@@ -158,10 +177,10 @@ check("91 days -> +0", "91 days before 2026-11-16: +0" in reason["Foxtrot"])
 check("FDE opening adds 1", row.loc["Alpha Robotics", "fde_opening"] and row.loc["Alpha Robotics", "score"] == 6)
 check("repeated titles count once", row.loc["Charlie Labs", "relevant_roles_count"] == 4)
 check("role points capped at 3", "4 relevant role title(s): +3 (capped)" in reason["Charlie Labs"])
-check("Mandarin points only with evidence, labeled hand-edited",
+check("client bonus points only with evidence, labeled hand-edited",
       row.loc["Charlie Labs", "score"] == 7 and "(hand-edited): +2" in reason["Charlie Labs"]
-      and row.loc["Charlie Labs", "mandarin_lead_evidence"].startswith("SIMULATED"))
-check("no evidence -> no Mandarin points", "no Mandarin-lead evidence: +0" in reason["Bravo AI"])
+      and row.loc["Charlie Labs", "client_bonus_evidence"].startswith("SIMULATED"))
+check("no evidence -> no client bonus points", "no client-specific bonus evidence: +0" in reason["Bravo AI"])
 check("newest filing gives the date and amount", (row.loc["Golf", "filing_date"], row.loc["Golf", "amount_sold_usd"])
       == ("2026-11-01", "5000000"))
 check("every filing link and the job link are kept", all(u in row.loc["Golf", "source_urls"] for u in (
@@ -197,11 +216,11 @@ check("funnel: 15 companies = 9 listed + 6 with no usable filing and no core rol
       adds_up(counts) and counts["funnel"][0][1] == 15 and counts["no_filing_no_core_role"] == 6
       and counts["funnel"][-1] == ("listed in accounts.csv", 9))
 
-# 4. the owner's Mandarin file
-check("no file -> no evidence", ba.mandarin_evidence() == {})
-ba.MANDARIN_CSV.parent.mkdir(parents=True)
-ba.MANDARIN_CSV.write_text("company_name,evidence\nCharlie Labs,SIMULATED link\nEcho,\n")
-check("rows without evidence are ignored", ba.mandarin_evidence() == {"charlie labs": "SIMULATED link"})
+# 4. the reviewer's client bonus file
+check("no file -> no evidence", ba.client_bonus_evidence() == {})
+ba.CLIENT_BONUS_CSV.parent.mkdir(parents=True)
+ba.CLIENT_BONUS_CSV.write_text("company_name,evidence\nCharlie Labs,SIMULATED link\nEcho,\n")
+check("rows without evidence are ignored", ba.client_bonus_evidence() == {"charlie labs": "SIMULATED link"})
 
 # 5. the command
 check("missing jobs.csv -> exit 1", ba.main(["--as-of", "2026-11-16"]) == 1)
@@ -216,10 +235,10 @@ check("funnel.csv: steps and counts, the listed row equal to the accounts writte
       list(funnel_file.columns) == ["step", "companies"] and len(funnel_file) == 6
       and funnel_file["companies"].iloc[-1] == len(written)
       and funnel_file["companies"].iloc[0] == funnel_file["companies"].iloc[1:].sum())
-ba.MANDARIN_CSV.write_text("company,proof\nCharlie Labs,x\n")
-check("Mandarin file with wrong columns -> exit 1", ba.main(["--as-of", "2026-11-16"]) == 1)
+ba.CLIENT_BONUS_CSV.write_text("company,proof\nCharlie Labs,x\n")
+check("client bonus file with wrong columns -> exit 1", ba.main(["--as-of", "2026-11-16"]) == 1)
 
-# 6. SIMULATED owner decisions, copies of one posting, the added columns, TheirStack HQ city
+# 6. SIMULATED reviewer decisions, copies of one posting, the added columns, TheirStack HQ city
 check("no decisions file -> no decisions", ba.review_decisions() == {})
 ba.REVIEW_DECISIONS_CSV.write_text("company_name,form_d_issuer,decision,reason\n"
                                    "Romeo,Romeo Labs Inc.,accept,SIMULATED: website spells the Form D name\n"
@@ -265,7 +284,7 @@ accounts2, review2, counts2 = ba.build(candidates2, jobs2, {}, AS_OF, decisions)
 row2 = accounts2.set_index("company_name")
 check("an accepted short-form match goes to accounts, labeled hand-edited",
       "Romeo" in row2.index
-      and "match confirmed by the owner (hand-edited): SIMULATED" in row2.loc["Romeo", "score_reason"])
+      and "match confirmed by the reviewer (hand-edited): SIMULATED" in row2.loc["Romeo", "score_reason"])
 check("a company on the block list is in neither file",
       "Sierra" not in set(row2.index) | set(review2["theirstack_company"]))
 check("copies of one posting count once: 3 postings, 2 titles",
@@ -287,10 +306,10 @@ check("a full-name match with no TheirStack HQ city: listed, flagged",
       "Victor" in row2.index and "no HQ city" in row2.loc["Victor", "flags"])
 check("nothing was left out by the rules here", len(review2) == 0)
 check("counts: 9 relevant records, 8 postings, 1 accepted, 1 on the block list",
-      (counts2["relevant_jobs"], counts2["relevant_postings"], len(counts2["accepted_by_owner"]),
-       len(counts2["rejected_by_owner"]), counts2["unused_decisions"]) == (9, 8, 1, 1, 0))
+      (counts2["relevant_jobs"], counts2["relevant_postings"], len(counts2["accepted_by_reviewer"]),
+       len(counts2["rejected_by_reviewer"]), counts2["unused_decisions"]) == (9, 8, 1, 1, 0))
 check("funnel: 6 companies = 5 listed + 1 on the block list",
-      adds_up(counts2) and counts2["funnel"][1] == ("on the owner's block list", 1) and counts2["accounts"] == 5)
+      adds_up(counts2) and counts2["funnel"][1] == ("on the reviewer's block list", 1) and counts2["accounts"] == 5)
 _, _, counts3 = ba.build(candidates2, jobs2, {}, AS_OF, {**decisions, ("nobody", ""): ("reject", "SIMULATED")})
 check("a decision that matches no company is counted", counts3["unused_decisions"] == 1)
 header = "company_name,form_d_issuer,decision,reason\n"
@@ -304,7 +323,7 @@ for content, problem in ((header + ",Romeo Labs Inc.,accept,x\n", "no company na
         check(f"decisions file refused: {problem}", False)
     except ValueError:
         check(f"decisions file refused: {problem}", True)
-ba.MANDARIN_CSV.write_text("company_name,evidence\n")
+ba.CLIENT_BONUS_CSV.write_text("company_name,evidence\n")
 check("decisions file with wrong columns -> exit 1", ba.main(["--as-of", "2026-11-16"]) == 1)
 ba.REVIEW_DECISIONS_CSV.unlink()
 check("without a decisions file the run exits 0", ba.main(["--as-of", "2026-11-16"]) == 0)
@@ -408,14 +427,14 @@ check("an accepted match counts its newest filing, even above the amount rule",
       and row4.loc["Xray", "source_urls"].count("https://sec.example/filing/") == 2)
 check("accepted with only filings above the rule -> account", "Yankee" in row4.index)
 check("a blank-issuer accept keeps a company the HQ rule would drop, labeled hand-edited and flagged",
-      "Quokka" in row4.index and "accepted by the owner (hand-edited): SIMULATED" in row4.loc["Quokka", "score_reason"]
+      "Quokka" in row4.index and "accepted by the reviewer (hand-edited): SIMULATED" in row4.loc["Quokka", "score_reason"]
       and "ZIP is outside" in row4.loc["Quokka", "flags"])
 check("a hiring-only company on the block list is in neither file",
       "Staffly" not in set(row4.index) | set(review4["theirstack_company"]) and len(review4) == 0
       and counts4["unused_decisions"] == 0 and adds_up(counts4))
 ba.REVIEW_DECISIONS_CSV.write_text(header + "Alpha,,reject,SIMULATED\nBravo AI,Bravo AI Corp,reject,SIMULATED\n"
                                    "Zebra,,accept,SIMULATED\n")
-check("names rejected for every issuer, as the owner wrote them", ba.rejected_company_names() == ["Alpha"])
+check("names rejected for every issuer, as the reviewer wrote them", ba.rejected_company_names() == ["Alpha"])
 spellings, _ = ba.search_list()
 check("a rejected company's spelling is not searched; the issuer's other spellings stay",
       "Alpha" not in spellings and "Alpha Robotics" in spellings and "Bravo AI" in spellings)
@@ -467,7 +486,7 @@ check("the longer name across two words of the description does not confirm",
       "Terra" in row5.index and row5.loc["Terra", "signal_tier"] == "hiring_only")
 check("a blank-issuer accept never confirms a Form D match",
       "Lambda" in row5.index and row5.loc["Lambda", "signal_tier"] == "hiring_only"
-      and "accepted by the owner (hand-edited): SIMULATED" in row5.loc["Lambda", "score_reason"]
+      and "accepted by the reviewer (hand-edited): SIMULATED" in row5.loc["Lambda", "score_reason"]
       and counts5["unused_decisions"] == 0)
 check("a full-name match needs no second field", row5.loc["Bravo AI", "signal_tier"] == "funded_and_hiring"
       and row5.loc["Bravo AI", "flags"] == "")
@@ -476,9 +495,9 @@ check("funnel: 10 companies = 9 listed + 1 with no usable filing and no core rol
 _, _, counts5b = ba.build(filings5, jobs5, {}, AS_OF, {("ridge", "ridge systems"): ("reject", "SIMULATED"),
                                                        ("nova", "nova robotics"): ("reject", "SIMULATED")})
 accounts5b, review5b, _ = ba.build(filings5, jobs5, {}, AS_OF, {("nova", "nova robotics"): ("reject", "SIMULATED")})
-check("the owner's reject of one match leaves the filing unused, and the reason says so",
+check("the reviewer's reject of one match leaves the filing unused, and the reason says so",
       "Nova" not in set(accounts5b["company_name"])
-      and "the owner rejected this match: SIMULATED" in " ".join(review5b.loc[review5b["theirstack_company"] == "Nova", "reasons"])
+      and "the reviewer rejected this match: SIMULATED" in " ".join(review5b.loc[review5b["theirstack_company"] == "Nova", "reasons"])
       and counts5b["unused_decisions"] == 0)
 
 # 9. SIMULATED staffing firms: flagged, and dropped when they post jobs for other companies
@@ -498,7 +517,7 @@ jobs6 = pd.DataFrame([
     firm(123, "Bigposter", "SIMULATED: Bigposter builds robots.", "8", "173"),  # many postings, no staffing hint
     firm(124, "Nohead", hint, "", "500"),                                   # no headcount: cannot tell
     firm(125, "Edge", hint, "10", "50"),                                    # exactly 5 a person: kept
-    firm(126, "Keeper", hint, "9", "74"),                                   # kept by the owner
+    firm(126, "Keeper", hint, "9", "74"),                                   # kept by the reviewer
     firm(127, "Fundshop", hint, "5", "60"),                                 # a Form D filing does not save it
 ], columns=JOB_COLUMNS)
 filings6 = ba.bay_area_filings(funding6, {})
@@ -513,17 +532,47 @@ check("a staffing hint alone only adds a flag",
 check("many postings without a staffing hint: listed, no flag", "Bigposter" in row6.index and row6.loc["Bigposter", "flags"] == "")
 check("no headcount: listed with the flag", "Nohead" in row6.index and "staffing" in row6.loc["Nohead", "flags"])
 check("exactly 5 postings per employee is kept", "Edge" in row6.index)
-check("the owner's accept keeps such a firm, and the flag shows the numbers",
+check("the reviewer's accept keeps such a firm, and the flag shows the numbers",
       "Keeper" in row6.index and row6.loc["Keeper", "flags"].split("; ") == [
           'the description suggests a staffing or services firm ("recruit")', "74 postings in 30 days against 9 employees"]
-      and "accepted by the owner (hand-edited)" in row6.loc["Keeper", "score_reason"])
+      and "accepted by the reviewer (hand-edited)" in row6.loc["Keeper", "score_reason"])
 check("the rule also drops a staffing firm that has a Form D filing, and keeps the filing in the row",
       "Fundshop" not in row6.index and rev6.loc["Fundshop", "form_d_issuer"] == "Fundshop Inc.")
 check("funnel: 7 companies = 5 listed + 2 posting jobs for other companies",
       adds_up(counts6) and [count for _, count in counts6["funnel"]] == [7, 0, 0, 0, 2, 5]
       and counts6["dropped_posts_for_others"] == 2)
 
-# 10. the funnel table refuses numbers that do not add up
+# 10. SIMULATED websites corrected by hand
+check("no domain file -> no corrections", ba.domain_overrides() == {})
+ba.DOMAIN_OVERRIDES_CSV.parent.mkdir(parents=True, exist_ok=True)
+ba.DOMAIN_OVERRIDES_CSV.write_text("company_name,domain,reason\nEdge Inc.,Edge-AI.example,SIMULATED; two parts\nGhost,ghost.example,\n")
+fixes = ba.domain_overrides()
+check("the domain file is read by cleaned company name, lower-cased, and a reason never holds the flag separator",
+      fixes == {"edge": ("edge-ai.example", "SIMULATED, two parts"), "ghost": ("ghost.example", "")})
+accounts7, _, counts7 = ba.build(filings6, jobs6, {}, AS_OF, {("keeper", ""): ("accept", "SIMULATED")}, fixes)
+row7 = accounts7.set_index("company_name")
+check("a corrected website replaces TheirStack's in the row, and a flag names both",
+      row7.loc["Edge", "domain"] == "edge-ai.example" and row7.loc["Edge", "flags"].split("; ")[-1]
+      == "website set by the reviewer (hand-edited): edge-ai.example instead of TheirStack's edge.example, SIMULATED, two parts")
+check("other rows keep their domain, and the list is otherwise the same",
+      row7.loc["Smallhint", "domain"] == row6.loc["Smallhint", "domain"] and list(row7.index) == list(row6.index)
+      and list(row7["score"]) == list(row6["score"]))
+check("a correction for a company that is not listed is counted, not dropped silently",
+      (counts7["corrected_domains"], counts7["unused_domain_overrides"]) == (1, 1) and counts6["corrected_domains"] == 0)
+for problem, body in (("a missing column", "company_name,domain\nEdge,edge.example\n"),
+                      ("a value that is not a domain", "company_name,domain,reason\nEdge,https://edge.example/x,\n"),
+                      ("an empty company name", "company_name,domain,reason\n,edge.example,\n"),
+                      ("a company listed twice", "company_name,domain,reason\nEdge,a.example,\nEdge Inc.,b.example,\n")):
+    ba.DOMAIN_OVERRIDES_CSV.write_text(body)
+    try:
+        ba.domain_overrides()
+        check(f"domain file refused: {problem}", False)
+    except ValueError:
+        check(f"domain file refused: {problem}", True)
+check("a malformed domain file stops the command with exit 1", ba.main(["--as-of", "2026-11-16"]) == 1)
+ba.DOMAIN_OVERRIDES_CSV.unlink()
+
+# 11. the funnel table refuses numbers that do not add up
 check("funnel table: parts equal to the total are accepted", len(ba.funnel_table(10, 1, 2, 3, 0, 4)) == 6)
 try:
     ba.funnel_table(10, 1, 2, 3, 0, 5)

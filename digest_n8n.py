@@ -3,7 +3,7 @@
 The workflow is automation/n8n/weekly_digest.json. It searches HubSpot for companies whose
 `signal_stage` is "new" and that were created in the last 7 days, builds a digest, and
 creates one HubSpot task holding it. Since step 3 decides uncertain matches by rule, this
-digest is how the owner sees what the rules listed, without a review step.
+digest is how the reviewer sees what the rules listed, without a review step.
 
 n8n runs in a throwaway Docker container: the workflow file is imported, executed once
 from the command line and the container is removed. Nothing is installed and no n8n

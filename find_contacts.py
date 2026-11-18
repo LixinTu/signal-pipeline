@@ -21,6 +21,10 @@ Personal data:
   committed by accident. The people who were not picked are never written anywhere.
 - Phone numbers and social profiles are dropped as soon as an answer arrives.
 - It prints counts only, and it sends nothing to anyone: this script only reads.
+- With --outcomes-only it measures coverage and writes no personal data at all: no name,
+  email or position reaches a file, only how well the best contact fits, Hunter's
+  verification status for that email and the cost. Those rows add up across runs in
+  data/contacts/contact_outcomes.csv.
 
 Credits and requests:
 - Hunter's free plan has 50 credits a month. Its pricing page says one credit per email
@@ -36,6 +40,7 @@ Usage:
     python find_contacts.py --dry-run                    # show the plan; send nothing
     python find_contacts.py                              # the first 5 accounts
     python find_contacts.py --companies "Sim,Labelbox"   # the named accounts
+    python find_contacts.py --outcomes-only --limit 34   # measure coverage; no name or email is saved
 """
 
 from __future__ import annotations
@@ -60,6 +65,7 @@ ROOT = Path(__file__).resolve().parent
 ACCOUNTS_CSV = ROOT / "data" / "accounts.csv"
 JOBS_CSV = ROOT / "data" / "jobs.csv"
 CONTACTS_CSV = ROOT / "data" / "contacts" / "contacts.csv"
+OUTCOMES_CSV = ROOT / "data" / "contacts" / "contact_outcomes.csv"
 RAW_DIR = ROOT / "data" / "raw"
 KEY_ENV = "HUNTER_API_KEY"
 SEARCH_URL = "https://api.hunter.io/v2/domain-search"
@@ -95,6 +101,8 @@ KEPT_FIELDS = ("value", "type", "confidence", "first_name", "last_name", "positi
 COLUMNS = ["company_name", "domain", "headcount", "target", "result", "query", "contacts_returned", "first_name",
            "last_name", "position", "email", "confidence", "verification_status", "sources", "credits_used", "source",
            "searched_at"]
+PERSONAL_COLUMNS = ("first_name", "last_name", "position", "email")
+OUTCOME_COLUMNS = [column for column in COLUMNS if column not in PERSONAL_COLUMNS]
 
 log = logging.getLogger("find_contacts")
 
@@ -167,18 +175,31 @@ def choose(emails: list[dict[str, Any]], target: dict[str, Any]) -> tuple[dict[s
     return ranked[0], CONFIG["fit_labels"][fit(ranked[0])]
 
 
+def outcome_of(chosen: dict[str, Any] | None, fit: str) -> dict[str, Any]:
+    """What may be kept about a contact when no personal data is written: how well it fits,
+    and Hunter's confidence, verification status and number of sources for its email."""
+    if not chosen:
+        return {"result": fit, "confidence": "", "verification_status": "", "sources": ""}
+    return {"result": fit, "confidence": chosen.get("confidence") or "",
+            "verification_status": chosen.get("verification_status") or "", "sources": chosen.get("sources")}
+
+
 def cache_file(domain: str) -> str:
     """The start of a cache file's name for one domain."""
     return f"hunter_domain_search_{re.sub(r'[^a-z0-9.-]+', '_', domain.lower())}_"
 
 
-def read_cache(domain: str, params: dict[str, Any], now: datetime) -> dict[str, Any] | None:
-    """The newest saved answer for the same query, if it is recent enough."""
+def read_cache(domain: str, params: dict[str, Any], now: datetime, with_person: bool = True) -> dict[str, Any] | None:
+    """The newest saved answer for the same query, if it is recent enough. An answer saved by
+    an --outcomes-only run holds no person, so it is passed over when a person is needed."""
     for path in sorted(RAW_DIR.glob(cache_file(domain) + "*.json"), reverse=True):
         try:
             saved = json.loads(path.read_text(encoding="utf-8"))
             age = now - datetime.fromisoformat(saved["searched_at"])
         except (OSError, ValueError, KeyError, TypeError):
+            continue
+        answer = saved.get("answer") or {}
+        if with_person and "outcome" in answer and answer.get("returned"):
             continue
         if saved.get("params") == params and age <= timedelta(days=CONFIG["cache_days"]):
             return saved
@@ -264,6 +285,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=CONFIG["default_limit"],
                         help=f"how many accounts, from the top of accounts.csv (default {CONFIG['default_limit']})")
     parser.add_argument("--companies", default="", help="comma-separated account names, instead of --limit")
+    parser.add_argument("--outcomes-only", action="store_true",
+                        help="measure coverage only: write no name, email or position anywhere")
     parser.add_argument("--max-credits", type=float, default=CONFIG["default_max_credits"],
                         help=f"stop before a search that could pass this many credits (default {CONFIG['default_max_credits']})")
     args = parser.parse_args(argv)
@@ -273,7 +296,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Search Hunter for the chosen accounts and write data/contacts/contacts.csv."""
+    """Search Hunter for the chosen accounts and write data/contacts/contacts.csv, or with
+    --outcomes-only data/contacts/contact_outcomes.csv."""
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     if not ACCOUNTS_CSV.exists():
@@ -294,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
                  "the cap is %g. Up to %d people are read per search and one is kept.", len(accounts),
                  len(accounts) * CONFIG["expected_cost"], args.max_credits, CONFIG["ask_for"])
         return 0
-    for path in (CONTACTS_CSV, RAW_DIR / "hunter_domain_search_check.json"):
+    for path in (CONTACTS_CSV, OUTCOMES_CSV, RAW_DIR / "hunter_domain_search_check.json"):
         if not git_ignored(path):
             log.error("git does not ignore %s, so names and emails could be committed. Nothing was sent.", shown(path))
             return 1
@@ -319,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         answer = None
         for query, params in search_plan(account["domain"], target):
-            saved = read_cache(account["domain"], params, now)
+            saved = read_cache(account["domain"], params, now, with_person=not args.outcomes_only)
             if saved:
                 answer, row["source"] = saved["answer"], row["source"] or "cache"
             else:
@@ -341,8 +365,10 @@ def main(argv: list[str] | None = None) -> int:
                 cost = client.credits_used - spent
                 row["credits_used"] += cost
                 row["source"] = "hunter"
-                kept, _ = choose(full["emails"], target)   # the others are dropped here and never saved
+                kept, fit = choose(full["emails"], target)   # the others are dropped here and never saved
                 answer = {"emails": [kept] if kept else [], "returned": len(full["emails"]), "held": full["held"]}
+                if args.outcomes_only:   # not even the chosen person is saved, only how the search went
+                    answer = {**answer, "emails": [], "outcome": outcome_of(kept, fit)}
                 stamp = now.strftime("%Y-%m-%dT%H%M%SZ")
                 (RAW_DIR / f"{cache_file(account['domain'])}{query}_{stamp}.json").write_text(
                     json.dumps({"searched_at": now.isoformat(), "query": query, "params": params, "answer": answer},
@@ -355,19 +381,33 @@ def main(argv: list[str] | None = None) -> int:
             if answer["returned"] or failed:
                 break
         if answer is not None:
-            chosen, row["result"] = choose(answer["emails"], target)
+            chosen = None
+            if "outcome" in answer:
+                row.update(answer["outcome"])
+            else:
+                chosen, fit = choose(answer["emails"], target)
+                row.update(outcome_of(chosen, fit))
             row["contacts_returned"] = answer["returned"]
-            if chosen:
+            if chosen and not args.outcomes_only:
                 row.update({"first_name": chosen.get("first_name") or "", "last_name": chosen.get("last_name") or "",
-                            "position": chosen.get("position") or "", "email": chosen.get("value") or "",
-                            "confidence": chosen.get("confidence") or "",
-                            "verification_status": chosen.get("verification_status") or "",
-                            "sources": chosen.get("sources")})
+                            "position": chosen.get("position") or "", "email": chosen.get("value") or ""})
         if failed:
             break
 
     CONTACTS_CSV.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows, columns=COLUMNS).to_csv(CONTACTS_CSV, index=False)
+    if args.outcomes_only:
+        # Outcomes add up across runs. A company searched again replaces its row; a skipped
+        # company never replaces a row that holds a result.
+        on_file: dict[str, dict[str, Any]] = {}
+        if OUTCOMES_CSV.exists():
+            earlier = pd.read_csv(OUTCOMES_CSV, dtype=str, keep_default_na=False)
+            on_file = {saved["company_name"]: saved for saved in earlier.to_dict("records")}
+        for row in rows:
+            if not (str(row["result"]).startswith("skipped") and row["company_name"] in on_file):
+                on_file[row["company_name"]] = {column: row[column] for column in OUTCOME_COLUMNS}
+        pd.DataFrame(list(on_file.values()), columns=OUTCOME_COLUMNS).to_csv(OUTCOMES_CSV, index=False)
+    else:
+        pd.DataFrame(rows, columns=COLUMNS).to_csv(CONTACTS_CSV, index=False)
     after = client.credits()
     found = [row for row in rows if row["result"] in CONFIG["fit_labels"]]
     statuses = [row["verification_status"] or "not given" for row in found]
@@ -387,8 +427,16 @@ def main(argv: list[str] | None = None) -> int:
              "The balance could not be read." + (f" Before the run: {before[0]:g} used." if before else ""))
     if stopped:
         log.warning("The run stopped early: %s.", stopped)
-    log.info("One name and email per company is in %s, which git ignores. Nothing was sent to anyone.",
-             shown(CONTACTS_CSV))
+    if args.outcomes_only:
+        total = pd.read_csv(OUTCOMES_CSV, dtype=str, keep_default_na=False)
+        counted = [int((total["result"] == label).sum()) for label in CONFIG["fit_labels"] + ["none"]]
+        log.info("Outcomes only: no name, email or position was written. On file in %s: %d companies. A contact in "
+                 "the target role: %d. In the right team but not its lead: %d. In another role: %d. No contact: %d. "
+                 "Skipped: %d. Nothing was sent to anyone.", shown(OUTCOMES_CSV), len(total), *counted,
+                 len(total) - sum(counted))
+    else:
+        log.info("One name and email per company is in %s, which git ignores. Nothing was sent to anyone.",
+                 shown(CONTACTS_CSV))
     return 1 if failed else 0
 
 
