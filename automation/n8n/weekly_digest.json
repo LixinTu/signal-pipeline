@@ -1,0 +1,124 @@
+{
+  "id": "signalDigest0001",
+  "name": "Signal pipeline: weekly digest",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "5b0c2f0e-6a51-4d0c-9a0e-000000000001",
+      "name": "Start",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/companies/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.HUBSPOT_SERVICE_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ filterGroups: [ { filters: [ { propertyName: 'signal_stage', operator: 'EQ', value: 'new' }, { propertyName: 'createdate', operator: 'GTE', value: String(Date.now() - 7 * 24 * 60 * 60 * 1000) } ] } ], properties: ['name', 'domain', 'signal_score', 'signal_tier', 'signal_flags'], sorts: [ { propertyName: 'signal_score', direction: 'DESCENDING' } ], limit: 100 }) }}",
+        "options": {}
+      },
+      "id": "5b0c2f0e-6a51-4d0c-9a0e-000000000002",
+      "name": "Search new companies",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Builds this week's digest as a HubSpot task from the company search result.\n// Company names come from outside data, so every value is HTML-escaped.\nconst result = $input.first().json;\nconst companies = result.results || [];\nconst esc = (value) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst today = new Date().toISOString().slice(0, 10);\nconst total = result.total ?? companies.length;\nconst flagged = companies.filter((company) => (company.properties || {}).signal_flags).length;\nconst lines = companies.map((company) => {\n  const p = company.properties || {};\n  const flags = p.signal_flags ? ' Flags: ' + esc(p.signal_flags.split('\\n').join('; ')) + '.' : '';\n  return '<li><strong>' + esc(p.name) + '</strong> (' + esc(p.domain) + '): score ' + esc(p.signal_score)\n    + ', ' + esc(p.signal_tier) + '.' + flags + '</li>';\n});\nconst more = total > companies.length ? ' Showing the first ' + companies.length + '.' : '';\nconst body = companies.length\n  ? '<p>' + total + ' new account(s) in the last 7 days, ' + flagged + ' with a flag from the rules.' + more\n    + '</p><ul>' + lines.join('') + '</ul>'\n  : '<p>No new accounts in the last 7 days.</p>';\nconst task = {\n  properties: {\n    hs_timestamp: new Date().toISOString(),\n    hs_task_subject: 'Signal digest ' + today + ': ' + total + ' new account(s)',\n    hs_task_body: body,\n    hs_task_status: 'NOT_STARTED',\n    hs_task_priority: 'LOW',\n    hs_task_type: 'TODO',\n  },\n};\nif ($env.DIGEST_NO_TASK === '1') {\n  return [];  // read-only run: nothing goes on to the node that creates the task\n}\nreturn [{ json: { task, new_accounts: total, flagged } }];\n"
+      },
+      "id": "5b0c2f0e-6a51-4d0c-9a0e-000000000003",
+      "name": "Build digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/tasks",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.HUBSPOT_SERVICE_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.task) }}",
+        "options": {}
+      },
+      "id": "5b0c2f0e-6a51-4d0c-9a0e-000000000004",
+      "name": "Create digest task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Search new companies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search new companies": {
+      "main": [
+        [
+          {
+            "node": "Build digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build digest": {
+      "main": [
+        [
+          {
+            "node": "Create digest task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

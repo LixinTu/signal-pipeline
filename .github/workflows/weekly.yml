@@ -1,0 +1,126 @@
+# Weekly run of the signal pipeline: funding (step 2), jobs (step 1), accounts (step 3),
+# HubSpot (step 4), the digest workflow in n8n, then a short run summary.
+#
+# Needs three repository secrets: THEIRSTACK_API_KEY, SEC_USER_AGENT, HUBSPOT_SERVICE_KEY.
+# Optional repository variable REVIEW_DECISIONS_CSV: the text of data/manual/review_decisions.csv,
+# so the owner's overrides (the block list and the accepts) also apply here. No step waits for a
+# review: step 3's rules decide every uncertain match and the summary shows the funnel.
+#
+# This repository is public, so its logs and run summaries are public too. The scripts log
+# counts, not company lists, and nothing is uploaded as an artifact. API responses are kept
+# between runs in the Actions cache, which is not downloadable from the repository page.
+
+name: Weekly signal run
+
+on:
+  schedule:
+    - cron: "0 15 * * 1"  # Mondays 15:00 UTC, morning in San Francisco
+  workflow_dispatch:
+    inputs:
+      funded_credits:
+        description: "Max TheirStack credits for jobs at Form D companies (1 to 125)"
+        default: "10"
+      hiring_credits:
+        description: "Max TheirStack credits for new companies hiring core roles (1 to 125)"
+        default: "10"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly-signal-run
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash  # runs with -eo pipefail, so a failing script fails its step even through tee
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      THEIRSTACK_API_KEY: ${{ secrets.THEIRSTACK_API_KEY }}
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+      HUBSPOT_SERVICE_KEY: ${{ secrets.HUBSPOT_SERVICE_KEY }}
+      REVIEW_DECISIONS_CSV: ${{ vars.REVIEW_DECISIONS_CSV }}
+      # The weekly credit cap: 10 + 10 = at most 20 TheirStack credits a run
+      FUNDED_CREDITS: ${{ inputs.funded_credits || '10' }}
+      HIRING_CREDITS: ${{ inputs.hiring_credits || '10' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Offline checks (simulated data, no API calls)
+        run: python tests/run_all.py
+
+      - name: Restore API responses from earlier runs
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: pipeline-data-${{ github.run_id }}
+          restore-keys: pipeline-data-
+
+      - name: Owner's overrides (block list and accepts)
+        if: env.REVIEW_DECISIONS_CSV != ''
+        run: |
+          mkdir -p data/manual
+          printf '%s\n' "$REVIEW_DECISIONS_CSV" > data/manual/review_decisions.csv
+
+      - name: Step 2, funding (SEC Form D, free)
+        run: |
+          mkdir -p run_logs
+          python fetch_funding.py 2>&1 | tee run_logs/funding.log
+
+      - name: Step 1, jobs at Form D companies
+        run: >
+          python fetch_jobs.py --funded-companies --any-hq-city --days 7
+          --limit "$FUNDED_CREDITS" 2>&1 | tee run_logs/jobs_funded.log
+
+      - name: Step 1, new companies hiring core roles
+        run: >
+          python fetch_jobs.py --core-roles --one-per-company --days 7
+          --limit "$HIRING_CREDITS" 2>&1 | tee run_logs/jobs_hiring.log
+
+      - name: Step 3, accounts
+        run: python build_accounts.py 2>&1 | tee run_logs/accounts.log
+
+      - name: Step 4, HubSpot
+        if: env.HUBSPOT_SERVICE_KEY != ''
+        run: python push_hubspot.py 2>&1 | tee run_logs/hubspot.log
+
+      - name: Digest in n8n (one HubSpot task listing the week's new accounts)
+        if: env.HUBSPOT_SERVICE_KEY != ''
+        run: python digest_n8n.py 2>&1 | tee run_logs/digest.log
+
+      - name: Save API responses for the next run
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: pipeline-data-${{ github.run_id }}
+
+      - name: Run summary
+        if: always()
+        run: |
+          {
+            echo "## Weekly signal run, $(date -u +%F)"
+            for step in funding jobs_funded jobs_hiring accounts hubspot digest; do
+              echo
+              echo "### ${step//_/ }"
+              if [ -f "run_logs/$step.log" ]; then
+                grep -E "^(WARNING|ERROR) |SEC search:|Wrote [0-9]+ filings|Requests sent:|Jobs received this run|API credits used|Matching jobs not yet received|Candidate companies with a relevant job|Wrote [0-9]+ accounts|Accounts by tier|Funnel:|Owner's decisions|HubSpot push:|n8n digest" \
+                  "run_logs/$step.log" | sed -E 's/^(INFO|WARNING|ERROR) /- \1: /' | sed -n '1,40p' \
+                  || echo "- no summary lines"
+              else
+                echo "- did not run"
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,31 @@
+{
+  "name": "Project 2: outreach draft (created by apollo_sequence.py)",
+  "note": "DRAFT. Text in [ ] is filled in by hand in Apollo before an email is approved. The script creates this sequence inactive, with every email waiting for review.",
+  "max_emails_per_day": 5,
+  "steps": [
+    {
+      "type": "manual_email",
+      "wait_time": 0,
+      "wait_mode": "minute",
+      "thread": "new_thread",
+      "subject": "A work sample for {{company}}",
+      "body_html": "<p>Hi {{first_name}},</p><p>I'm looking for a GTM engineering role and would rather show work than send a résumé. [One sentence on why this person, from something they or the company published.]</p><p>I built a small pipeline that finds Bay Area AI companies hiring forward deployed engineers, checks SEC filings for recent funding and scores each account with its reasons. The write-up, with its numbers and limits, is here: [link].</p><p>Are you the right person to send a short work sample for {{company}} to? If this isn't relevant, tell me and I won't write again.</p><p>[Your name]</p>"
+    },
+    {
+      "type": "auto_email",
+      "wait_time": 3,
+      "wait_mode": "day",
+      "thread": "reply_to_thread",
+      "subject": "",
+      "body_html": "<p>Hi {{first_name}}, one more line in case the first got buried. The two-minute version is the results table at the top of the write-up: [link]. I'm glad to send a sample list for {{company}} instead of taking your time on a call.</p><p>[Your name]</p>"
+    },
+    {
+      "type": "auto_email",
+      "wait_time": 4,
+      "wait_mode": "day",
+      "thread": "reply_to_thread",
+      "subject": "",
+      "body_html": "<p>Hi {{first_name}}, this is my last note. If the timing is wrong or someone else handles this, a one-word reply is enough and I'll leave it there.</p><p>[Your name]</p>"
+    }
+  ]
+}

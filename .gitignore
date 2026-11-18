@@ -1,0 +1,26 @@
+# Secrets: real keys live only in .env
+.env
+
+# Raw API responses, cached so re-runs don't spend credits again
+data/raw/
+
+# Generated tables stay private until TheirStack's terms on sharing its data are checked
+data/**/*.csv
+
+# Clay exports hold people's names and work emails: never commit them
+data/clay/
+
+# Hand-edited evidence (Mandarin-speaking leads) and the Brix work sample stay private
+data/manual/
+data/brix/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Working plan: private notes, kept out of the repo
+docs/plan.md
+
+# Logs of a local or CI run
+run_logs/

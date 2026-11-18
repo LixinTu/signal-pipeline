@@ -1,0 +1,80 @@
+# Decisions
+
+One or two lines per choice and its trade-off.
+
+## Data sources
+
+- **SEC Form D instead of a paid funding database.** Free and official, but it has no round name, so amount sold is only a stage estimate, and not every round produces a filing. Of 5 AI startups that Brix names as customers, only Luma AI had a Form D under its own name since 2023.
+- **TheirStack Jobs API for hiring signals.** It has a self-serve free plan and a documented API; alternatives are PredictLeads and Coresignal, or TheirStack's own Clay integration. The free plan gives 200 credits a month at 1 credit per job, so filters must be narrow and every response is cached.
+
+## Step 1: `fetch_jobs.py`
+
+- **Filter on company HQ city in the API, then check the ZIP code locally.** This keeps credits on Bay Area companies, but TheirStack's city field has no state, so same-named cities elsewhere get through; they are flagged in `hq_zip_check`, and step 3 confirms HQ from the Form D address.
+- **At most 500 employees, unknown size kept.** A rough stand-in for Seed to Series C that keeps companies with missing size data, at the cost of letting some larger companies in.
+- **Direct employers only.** Agency postings hide the company that is actually hiring.
+- **Title keywords instead of regex.** Keywords match words in any order ("Engineer, Applied AI"), but titles without "engineer", such as "Member of Technical Staff", are missed.
+- **Exclude jobs already received instead of paging.** TheirStack charges again for repeated data, so every request sends the known job IDs in `job_id_not`; a run with the same parameters on the same day reuses `data/raw/` and spends nothing.
+- **TheirStack's own funding fields are kept for reference only.** Funding comes from Form D. TheirStack's funding-date filter was the planned fallback for a job list too large for the credits, but in the first test it matched 0 of 361 jobs: TheirStack had no funding data for any of the 5 small companies sampled.
+- **Generated CSVs stay out of git for now.** TheirStack's terms on sharing its data are not checked yet, so the write-up uses screenshots and totals.
+- **Search only companies with a usable Form D filing.** The open search found 361 jobs in 14 days, more than the free credits. Sending the Form D company names in `company_name_case_insensitive_or` cost 14 credits for 30 days of jobs, at the price of missing a company whose TheirStack name matches none of the spellings tried.
+- **A few spellings per Form D name.** TheirStack matches its own company name exactly, in any case, so each legal name goes in without its legal suffix, plus a short form without a generic last word ("Generalist AI" → "Generalist") and each half of a two-part name. Matches on a short form go to the review file.
+- **Hiring-first search, one credit per company.** Requiring a Form D filing left 5 accounts: only 9 of 184 funded companies had a matching job. So a second search takes companies hiring a forward deployed or applied AI engineer, asks for one job at a time and excludes every company already received (`company_id_not`): 26 credits bought 26 new companies out of 72. The cost is depth: one job per company, so their role count is a lower bound.
+- **Companies the owner rejected are left out of every search** (`company_name_not`, and their spellings are dropped from the funded search), after 4 of 15 credits went to jobs at two rejected companies.
+- **30-day window for the funded search, then 60 days without the HQ city filter.** Credits go only to funded companies, so the window can be wider than the open search's 14 days. The Form D address already places HQ, and TheirStack's city can be a label ("Remote First"), so `--any-hq-city` drops the city filter; with 60 days this found 15 more jobs for 15 credits. Step 3 sends any match whose TheirStack city is not a Bay Area city to review.
+
+## Step 3: `build_accounts.py`
+
+- **One amount rule for steps 1 and 3.** A filing counts from $100,000 sold up to the "Later" stage estimate ($200 million), roughly Seed to Series C. Step 1 searches only these companies, so no credit goes to a company that step 3 would drop.
+- **Recency from the first-sale date.** A filing can arrive months after the money came in. A first sale over 90 days ago scores 0 for recency instead of being dropped.
+- **Distinct titles, not job records.** One company had 10 job records for 4 titles, because TheirStack collected each posting twice (from the company's careers page and from Indeed), so counting records would overstate hiring.
+- **Rules decide uncertain matches; no run waits for a person.** Until 2026-11-17 a short-form name match, an ambiguous name, an HQ conflict or a staffing hint stopped a company until the owner reviewed it. Each case now has a rule, the doubt is written in `flags`, and `review_matches.csv` lists what the rules left out. Replayed with no hand decisions, the rules reproduce 6 of the owner's 9; the cost is that a wrong company stays listed until the owner blocks it.
+- **A short-form match needs a second field.** "Generalist" for "Generalist AI, Inc." counts only when a longer spelling of the legal name is the end of the company's domain, its job board name or its LinkedIn page name, or appears as whole words in its description. All four short-form matches so far were confirmed this way. An unconfirmed match is not used, which can cost a real funded company its funding points.
+- **Ambiguous matches are not used.** A name that fits two issuers, or an issuer that fits two TheirStack companies, would need a person to tell them apart; the company can still be listed as hiring-only.
+- **The Form D address places the HQ for a confirmed match.** TheirStack's city can be a label ("Remote First") or a second office. A company with no usable filing needs a Bay Area HQ in TheirStack, or it is dropped.
+- **Out-of-state Form D addresses checked against EDGAR's business city.** Some filings give a registered agent's address; without this check, 5 companies such as Daytona Platforms (New York on the form, San Francisco in EDGAR) would be missed. They are listed with a flag, and the EDGAR city is shown as the HQ.
+- **Mandarin-lead points only from a hand-edited file.** Never inferred from names; the score reason labels these points as hand-edited.
+- **Hiring first; funding adds points.** A company with no Bay Area Form D filing is still an account, in the `hiring_only` tier, when it is hiring a core role; it gets 0 recency points and the score reason says so. On equal scores a funded account sorts first.
+- **A filing above the amount rule is shown, not hidden.** One company filed for $10.75 million, $350 million and $1.03 billion on the same day and got in through the smallest. Such a company is listed on its in-range filing, with the largest amount in `flags`; with the owner's accept, the filing with the latest first sale counts. Size alone does not exclude a company: the example customer's own site shows large companies among its customers.
+- **A staffing hint flags; posting for others drops.** A description that suggests a staffing or services firm ("recruit", "headhunt", "consulting"), or a staffing or IT consulting industry, adds a flag. The firm is dropped only when its 30-day postings exceed 5 times its headcount. Among the first 40 companies that singled out two recruiters (24 employees with 559 postings, 9 with 74) and nobody else. The ratio is not used without a hint, because a small startup can post many copies of a few roles.
+- **TheirStack's funding fields as a reference column.** `theirstack_funding` (stage and last round date) helps a reader, but it is unverified and covers about half the companies, so it adds no points.
+- **The owner's overrides in a hand-edited file.** `data/manual/review_decisions.csv` confirms one match, keeps a company a rule would drop, or puts a company on the block list (a competitor, a company that is not a customer). Overrides win over every rule. Accepted rows say so in `score_reason`, and a row that no longer matches anything is reported, not silently dropped.
+- **A funnel table on every run.** `funnel.csv` counts the companies that came in and where each one went; the run fails if the parts do not add up, so a lost or double-counted company cannot pass unnoticed.
+- **Copies of one posting count once.** The key is the posting URL without its query string, and the copy from the company's own careers page is kept, since its location is in the company's own words. The copies still cost credits.
+- **Four columns for writing "why now" lines.** Job locations, salary ranges per title, TheirStack's count of the company's jobs in the last 30 days, and its short company description, all from responses already paid for. They inform the reader; the score does not use them.
+- **Job location is shown, not used as a filter.** The target is companies based in the Bay Area, so the search filters on HQ. Of the 26 companies from the first hiring-first fetch, 9 had a posting that was remote, outside the Bay Area or named no city. The reviewer first left them out, then restored them: the company is based here, and `job_locations` shows where the role is. The cost: 11 of the 31 accounts have no fetched posting in the Bay Area, so a reader who wants local roles must filter on that column.
+
+## Step 4: `push_hubspot.py`
+
+- **Search by domain, then by saved id.** HubSpot's search can take a few moments to list a new company, so the script also keeps domain → company id in `data/raw/` and reads by id when the search finds nothing. A second run creates 0 companies.
+- **`signal_stage` is the owner's working status.** It is set to `new` when a company is created and never sent on update, so edits made in HubSpot survive every run. The CRM, not a CSV, is where review status lives.
+- **Doubts travel with the account.** `signal_flags` holds the rules' doubts, one per line, so they are visible in the CRM and in any digest built on it. It is rewritten on every run, and cleared when the doubts are gone.
+- **A create is never sent twice.** A 5xx or network error on a create fails that row instead of retrying, since a retry could make a duplicate; HTTP 429 is retried, because the request was not processed.
+- **`/crm/v3` endpoints, paced at 2 requests a second.** HubSpot allows 100 requests per 10 seconds and 5 searches a second. First live run on 2026-11-17, with a service key that has four company scopes: 5 companies created, and a second run created none.
+
+## Step 5: `.github/workflows/weekly.yml`
+
+- **Public logs, so counts only.** A public repository's run logs and summaries are public. The scripts log counts, and nothing is uploaded as an artifact.
+- **API responses in the Actions cache.** They carry the job ids already paid for and the downloaded Form D files. GitHub drops a cache not read for 7 days, the same interval as the schedule; a lost cache costs about 12 minutes of SEC downloads and at most the weekly credit cap.
+- **A fixed credit cap: 10 for funded companies plus 10 for new hiring companies** per run, about 80 to 100 of the 200 monthly credits.
+- **Review decisions come from a repository variable**, because the hand-edited file is not in git.
+
+## Step 2: `fetch_funding.py`
+
+- **California filter in the search, Bay Area by ZIP code.** EDGAR's search filters on the state of the principal office, and the ZIP code in each filing then flags the Bay Area. This downloads every new California filing (1,364 new notices in the 90 days to 2026-11-15; the first full run took 11.6 minutes) but needs no city list, which would miss places such as South San Francisco.
+- **One ZIP rule for every step.** The prefixes live in `bay_area.py`, shared with step 1. Prefixes 950 and 954 also reach Santa Cruz, Hollister and Ukiah, and Vacaville and Dixon (956) are missed; few AI startups are based there.
+- **New notices only, no amendments (D/A).** Amendments are mostly annual updates and corrections, not new money; the cost is missing a later tranche of the same round. SEC's form filter matches the original form type and returns both, so the script skips each hit whose `form` is D/A before downloading anything.
+- **Window dates in Eastern time.** EDGAR dates each filing by the calendar day in New York. With UTC, an evening run in California asked for tomorrow's date and dropped the first day of the window.
+- **Flag, don't drop.** Every California filing stays in `funding.csv` with `hq_zip_check` and `industry_excluded`, so step 3 filters and the README can show the whole funnel. Issuers choose their own industry group, so a property company filed as "Other" gets through; the join with job posts in step 3 is the real filter.
+- **Stage estimated from amount sold.** Under $5M Seed, under $25M Series A, under $75M Series B, under $200M Series C, otherwise Later, with the cut-offs in the config. Form D has no round name, and amount sold can include earlier closings, so the label is only an estimate.
+- **Filing date and first-sale date both kept.** Form D is due 15 days after the first sale, but some filings arrive months late, so step 3 decides which date scores recency.
+- **XML downloaded once, searches re-run every time.** A filing never changes, so its XML is cached for good and a stopped run resumes where it left off. The search is free and its results change daily, so it runs again each time (and is still saved to `data/raw/`).
+- **2 requests a second.** A fifth of SEC's limit. The first full run took 11.6 minutes in the background (1,375 requests); weekly runs need about a minute.
+
+## Automation and outreach
+
+- **n8n for the weekly digest, as a file in the repo.** Job postings ask for an automation platform next to code. Make was the first choice, but its free plan is reported to have no API and its HubSpot connection is a browser sign-in, so nothing there can be built or checked from the repo. An n8n workflow is a JSON file: `digest_n8n.py` imports it into a throwaway container and executes it once (`n8n import:workflow`, `n8n execute`). The cost: a 2 GB image is pulled on each weekly run, and the same two requests would be about 20 lines of Python.
+- **The digest is a HubSpot task.** It needs no third account and no email setup, and the first run showed that the existing service key may create tasks. A task is created even when no company is new, so a missing task means the run did not happen.
+- **The digest prints counts only.** The weekly run's log is public, so the script reads n8n's output itself and prints one line; the full execution, without the key, goes to `data/raw/`.
+- **Apollo through its API, up to an inactive draft.** `apollo_sequence.py` creates the sequence with `active: false` and every email as `to_be_reviewed`, which Apollo does not send. It knows two endpoints and has no code to add contacts, approve or activate. The free plan accepted both calls on 2026-11-18: Apollo's key page lists the endpoints a free plan cannot call (searching and enriching people and companies), and these two are not among them.
+- **Outreach is in the owner's own name.** The sample emails are written in the example customer's voice and are never sent. The sequence holds three draft emails for the owner's own job search.
+- **A person approves every batch.** The repo and the AI agent never send. An error in outreach repeats for every recipient, so the last step before sending stays manual.
